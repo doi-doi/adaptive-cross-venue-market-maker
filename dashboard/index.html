@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DERIVE MULTI-ASSET BINANCE-REFERENCE ADAPTIVE MM</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e9eefb; }
+    body { margin: 0; padding: 24px; max-width: 1500px; margin-inline: auto; }
+    h1 { font-size: 1.25rem; letter-spacing: .04em; margin: 0 0 16px; }
+    .banner { border: 1px solid #d7a738; background: #2c2410; padding: 14px; border-radius: 8px; margin-bottom: 18px; }
+    .banner strong { color: #ffd467; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 14px 0 20px; }
+    .card { background: #151c31; border: 1px solid #2b385b; border-radius: 8px; padding: 12px; }
+    .label { color: #9eaccb; font-size: .75rem; text-transform: uppercase; }
+    .value { font-size: 1.1rem; margin-top: 5px; overflow-wrap: anywhere; }
+    .signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 0 0 20px; }
+    .signal-title { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+    .bar { height: 8px; border-radius: 99px; background: #26324f; overflow: hidden; }
+    .bar i { display: block; height: 100%; background: #67d49b; border-radius: inherit; }
+    .signal-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: .78rem; }
+    table { width: 100%; border-collapse: collapse; background: #11182b; margin-bottom: 18px; font-size: .82rem; }
+    th, td { text-align: right; padding: 8px 7px; border-bottom: 1px solid #26324f; white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: #9eaccb; font-weight: 600; }
+    .ok { color: #67d49b; } .warn { color: #ffd467; } .bad { color: #ff8585; }
+    .muted { color: #9eaccb; }
+    @media (max-width: 800px) { body { padding: 12px; overflow-x: auto; } table { min-width: 1050px; } }
+  </style>
+</head>
+<body>
+  <h1>DERIVE MULTI-ASSET BINANCE-REFERENCE ADAPTIVE MM — MAINNET MONITOR</h1>
+  <div class="banner">
+    <div><strong>DERIVE MAINNET</strong></div>
+    <div>MODE: <span id="mode">MAINNET_SHADOW</span></div>
+    <div>MAINNET ARMED: <span id="armed">FALSE</span></div>
+    <div>REAL ORDERS: <span id="real-orders">0</span> · REAL POSITIONS: <span id="real-positions">0</span></div>
+    <div><strong>MAINNET SHADOW — NO REAL ORDERS.</strong></div>
+  </div>
+  <section class="grid" id="summary"></section>
+  <h2>Reference divergence</h2>
+  <section class="signal-grid" id="signals"><div class="card muted">Waiting for decision telemetry…</div></section>
+  <h2>Asset market table</h2>
+  <table><thead><tr><th>Asset</th><th>Status</th><th>Derive mid</th><th>Binance fair</th><th>Basis bps</th><th>Mode</th><th>Direction</th><th>Inventory</th><th>Buy edge</th><th>Sell edge</th><th>Bid</th><th>Ask</th><th>Health</th></tr></thead><tbody id="assets"><tr><td colspan="13" class="muted">Waiting for public shadow state…</td></tr></tbody></table>
+  <h2>Lifecycle and safety</h2>
+  <div class="card"><pre id="details" class="muted">No run yet.</pre></div>
+  <script>
+    const fmt = v => {
+      if (v === null || v === undefined) return "—";
+      if ((typeof v === 'number' || (typeof v === 'string' && /^[-+]?\d+(\.\d+)?$/.test(v))) && Number.isFinite(Number(v))) {
+        return Number(v).toLocaleString(undefined, {maximumFractionDigits: 6});
+      }
+      return String(v);
+    };
+    const esc = v => fmt(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const number = v => v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v);
+    const card = (label, value) => `<div class="card"><div class="label">${label}</div><div class="value">${fmt(value)}</div></div>`;
+    function draw(state) {
+      document.getElementById('mode').textContent = fmt(state.mode);
+      document.getElementById('armed').textContent = String(state.mainnet_armed).toUpperCase();
+      document.getElementById('real-orders').textContent = fmt(state.real_orders);
+      document.getElementById('real-positions').textContent = fmt(state.real_positions);
+      const models = state.models || {};
+      const conservative = models.CONSERVATIVE || {};
+      document.getElementById('summary').innerHTML = [
+        card('Shadow equity', conservative.equity), card('Shadow gross inventory', conservative.gross_inventory),
+        card('Shadow net inventory', conservative.net_inventory), card('Shadow fees', conservative.fees),
+        card('Max drawdown', conservative.max_drawdown), card('Active assets', (state.active_assets || []).length),
+        card('Shadow conservative fills', conservative.fills), card('Last update', state.last_update)
+      ].join('');
+      const latest = state.latest_decisions || {};
+      const rows = Object.entries(state.mappings || {}).map(([asset, mapping]) => {
+        const d = latest[asset] || {};
+        const bid = number(d.derive_bid);
+        const ask = number(d.derive_ask);
+        const deriveMid = bid !== null && ask !== null ? ((bid + ask) / 2).toFixed(6) : null;
+        return `<tr><td>${esc(asset)}</td><td class="${mapping.valid ? 'ok' : 'warn'}">${esc(mapping.reason)}</td><td>${esc(deriveMid)}</td><td>${esc(d.fair_value)}</td><td>${esc(d.basis_bps)}</td><td>${esc(d.market_mode)}</td><td>${esc(d.direction)}</td><td>${esc(d.inventory_mode)}</td><td>${esc(d.buy_edge_bps)}</td><td>${esc(d.sell_edge_bps)}</td><td>${esc(d.desired_bid)}</td><td>${esc(d.desired_ask)}</td><td class="${d.data_health === 'HEALTHY' ? 'ok' : 'warn'}">${esc(d.data_health || (mapping.valid ? 'WAITING' : 'REFERENCE_UNAVAILABLE'))}</td></tr>`;
+      }).join('');
+      document.getElementById('assets').innerHTML = rows || '<tr><td colspan="13" class="muted">No assets discovered.</td></tr>';
+      const signals = Object.entries(latest).map(([asset, d]) => {
+        const basis = number(d.basis_bps);
+        const width = basis === null ? 0 : Math.min(100, Math.max(3, Math.abs(basis) * 5));
+        return `<div class="card"><div class="signal-title"><strong>${esc(asset)}</strong><span class="muted">${esc(d.market_mode)}</span></div><div class="bar"><i style="width:${width}%"></i></div><div class="signal-meta"><span>basis ${esc(d.basis_bps)} bps</span><span>${d.divergence_protected ? 'PROTECTED' : 'NORMAL'}</span></div></div>`;
+      }).join('');
+      document.getElementById('signals').innerHTML = signals || '<div class="card muted">No decision telemetry yet.</div>';
+      document.getElementById('details').textContent = JSON.stringify({status: state.status, errors: state.errors, dashboard: state.dashboard_url}, null, 2);
+    }
+    async function refresh() { try { draw(await (await fetch('/api/state', {cache: 'no-store'})).json()); } catch (error) { document.getElementById('details').textContent = String(error); } }
+    refresh(); setInterval(refresh, 1000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+# Explicit live template only. This file is never used by the shadow runner.
+# It is intentionally armed because MAINNET_LIVE requires both this mode and
+# mainnet_armed=true; using it is a separate, post-build authorization step.
+mode: MAINNET_LIVE
+dry_run: false
+mainnet_armed: true
+derive_connector: derive_perpetual
+binance_connector: binance_perpetual
+capital_usdc: 800
+max_active_assets: 4
+order_size_multiplier: 1
+maker_fee_bps: 1
+fair_value_mid_weight: 0.5
+fair_value_microprice_weight: 0.5
+basis_window: 120
+basis_max_deviation_bps: 50
+min_edge_bps: 4
+volatility_buffer: 2
+latency_buffer: 1
+toxicity_buffer: 1
+minimum_profit_buffer: 1
+directional_skew_max_bps: 2
+inventory_skew_max_bps: 12
+portfolio_skew_max_bps: 4
+bbo_stale_seconds: 5
+reference_stale_seconds: 5
+refresh_tolerance_bps: 3
+quote_max_age_seconds: 30
+max_single_order_notional: 120
+max_open_order_notional: 400
+max_inventory_per_asset: 200
+max_portfolio_inventory: 400
+max_drawdown: 40
+max_actions_per_minute: 30
+quote_placement: AT_TOUCH
+max_book_levels: 5
+direction_threshold_bps: 1
+high_vol_threshold_bps: 8
+extreme_vol_threshold_bps: 20
+aggressive_spread_max_bps: 15
+defensive_spread_min_bps: 3
+fast_move_threshold_bps: 8
+assets:
+  ADA: {enabled: true}
+  CC: {enabled: true}
+  XRP: {enabled: true}
+  SOL: {enabled: true}
+report_dir: reports/mainnet_shadow
+log_dir: logs/mainnet_shadow
+database_path: logs/mainnet_shadow/telemetry.sqlite
