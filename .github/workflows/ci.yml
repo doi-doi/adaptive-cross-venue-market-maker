@@ -1,0 +1,39 @@
+name: Final Hummingbot controller checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - codex/hummingbot-condor-final
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[dev]'
+      - run: pytest -q
+      - run: ruff check controllers condor tests scripts src
+
+  native-hummingbot-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Import and exercise the controller inside Hummingbot
+        run: >-
+          docker run --rm
+          --volume "$GITHUB_WORKSPACE:/workspace:ro"
+          --env PYTHONPATH=/home/hummingbot
+          --workdir /workspace
+          --entrypoint /opt/conda/envs/hummingbot/bin/python
+          hummingbot/hummingbot:latest
+          /workspace/scripts/controller_contract_probe.py

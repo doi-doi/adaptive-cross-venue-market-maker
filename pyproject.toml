@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "pydantic>=2.0",
   "pytest>=8.0",
   "ruff>=0.6",
 ]

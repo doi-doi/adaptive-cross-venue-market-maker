@@ -1,198 +1,87 @@
-# Derive Multi-Asset Adaptive Market Maker
+# Derive Binance-Reference Adaptive Market Maker
 
-This repository contains an isolated Hummingbot Strategy V2 research and
-mainnet-shadow project for a bounded, multi-asset Derive perpetual market
-maker. The canonical active universe is **XRP and LINK**. Binance, Bybit, and
-OKX provide public reference data only; Derive is the sole execution venue in
-the design. The reference path is strict `BINANCE -> BYBIT -> OKX -> PAUSE`.
+**Hummingbot Strategy V2 + Condor | XRP / LINK | Derive perpetual execution |
+Binance perpetual reference**
 
-The project is research infrastructure, not a profitability or deployment
-claim. Public shadow fills are hypothetical, and no live order or account
-mutation is performed by the standalone runner.
+This is the final Agent Builders Cup architecture. The competition bot runs
+inside Hummingbot. A single reusable `derive_binance_adaptive_mm` controller is
+instantiated once for XRP and once for LINK; Condor launches, monitors, pauses,
+resumes, and stops the Hummingbot instance.
 
-## Current scope
+```text
+Binance perpetual -> fair value + market state
+                           |
+Derive BBO ---------------+-> mode -> inventory override -> desired quotes
+                                                        |
+                                                        v
+Condor -> Hummingbot V2 -> OrderExecutor -> derive_perpetual -> Derive
+```
 
-- Default profile: `conf/mainnet_shadow.yml`.
-- Active assets: `XRP`, `LINK` only.
-- Reference venues: Binance, Bybit, and OKX only.
-- Bitget: disabled and absent from the active reference schedule.
-- Execution: Derive perpetual only; reference venues are data-only.
-- Mode: `MAINNET_SHADOW`, `dry_run: true`, `mainnet_armed: false`.
-- Hedging, news filters, testnet workarounds, grids, and martingale logic are
-  outside the project.
-- Historical DOGE, ADA, ZEC, CC, SOL, BNB, and HYPE artifacts are retained for
-  audit and reproducibility but are not part of the default active universe.
+Binance is public market data only. Every `CreateExecutorAction` is hard-wired
+to `derive_perpetual`; there is no custom private REST/WebSocket execution.
 
-See [the current-universe record](docs/research/current_universe.md),
-[retired-asset record](docs/research/retired_assets.md), and
-[safety contract](docs/SAFETY.md) for the authoritative boundaries.
+## Strategy
 
-## Safety boundary
+1. Read Binance BBO, microprice, short return, and short volatility.
+2. Estimate causal Derive fair value from Binance plus rolling Derive/Binance basis.
+3. Observe Derive BBO and native trading rules.
+4. Select a deterministic market-making mode.
+5. Let inventory and portfolio risk override directional skew.
+6. Produce at most one post-only bid and one post-only ask.
+7. Preserve queue residency with tick-aware hold, deadband, and minimum residency.
+8. Cancel the vulnerable side immediately on a fast adverse Binance move.
+9. Pause on stale Binance, stale Derive, extreme conditions, or risk limits.
 
-The public shadow path has no credential loader, private API path, order
-placement, cancel endpoint, or reference-venue execution path. It records
-internal quote and fill-model events only and asserts `real_orders: 0` and
-`real_positions: 0`.
+| Market state | MM mode |
+|---|---|
+| `NORMAL` | `NEUTRAL` |
+| `UP_TREND` | `LONG_BIAS` |
+| `DOWN_TREND` | `SHORT_BIAS` |
+| `HIGH_VOL` | `DEFENSIVE` |
+| `EXTREME` or stale | `PAUSED` |
 
-Reference selection never averages or median-combines sources and never
-forward-fills across a gap. A stale primary fails over immediately; Binance
-must remain fresh for the configured recovery duration before it is selected
-again. A disagreement pause is fail-closed.
+Inventory override may modify or disable either side in every active mode. Bias
+is a modest maker-quote skew, never a directional position target.
 
-Active quotes refresh only when their distance from the current causal Derive
-midpoint is strictly greater than 2% (`200` bps). Quote age and small fair-value
-changes do not trigger normal refreshes; invalid, stale, paused, or risk
-violations still cancel protectively.
+## Safety defaults
 
-The live-shaped example is deliberately disarmed. This checkout does not
-authorize or start live execution. Completion, catalog coverage, public
-liquidity, and shadow PnL are not evidence of deployable alpha.
+- `shadow_mode: true`
+- `mainnet_armed: false`
+- total portfolio: `800 USDC`, with `200 USDC` reserve
+- XRP cap: `300 USDC`; LINK cap: `300 USDC`
+- Derive execution only; Binance reference only
+- other assets and reference exchanges disabled
+- no automatic mainnet arming
+
+Real creates require both `shadow_mode: false` and `mainnet_armed: true`.
+Shadow mode computes the full state and desired quotes but emits no creates.
 
 ## Repository layout
 
 ```text
-controllers/market_making/        Hummingbot Strategy V2 adapter
-src/derive_multi_asset_mm/         Decision layer and public shadow runner
-conf/                               Active and historical configuration profiles
-dashboard/                          Read-only local dashboard
-scripts/                            Audits, reports, and maintenance helpers
-tests/                              Deterministic unit and contract tests
-docs/                               Architecture, safety, research, and retention
-reports/published/                  Compact reviewed summaries safe to publish
-logs/                               Local runtime telemetry; ignored by Git
-reports/                            Local generated evidence; ignored by Git
+controllers/market_making/derive_binance_adaptive_mm.py  native V2 controller
+configs/derive_binance_adaptive_mm_xrp.yml               XRP instance
+configs/derive_binance_adaptive_mm_link.yml              LINK instance
+condor/derive_mm_health.py                               read-only health routine
+docs/                                                    architecture and operations
+research/legacy/                                         legacy standalone boundary
+submission/                                              competition status
+tests/                                                   deterministic invariants
 ```
 
-Only compact reviewed Markdown summaries under `reports/published/` are
-versioned. Raw telemetry, SQLite databases and sidecars, JSONL/NDJSON, logs,
-runtime state, caches, raw BBO/tick/order-book payloads, and generated report
-trees stay local. See [storage retention](docs/STORAGE_RETENTION.md).
+The older `src/`, `conf/`, `scripts/`, and dashboard are retained research
+evidence only. They are not the final runtime.
 
-## Install and deterministic checks
-
-The project targets Python 3.11 or newer:
+## Verify
 
 ```bash
-uv venv --python python3.11 .venv
-uv pip install --python .venv/bin/python -e '.[dev]'
-.venv/bin/pytest -q
-.venv/bin/ruff check src controllers scripts dashboard tests
+python -m pytest -q
+ruff check controllers condor tests scripts src
+python scripts/controller_contract_probe.py
 ```
 
-The Hummingbot adapter is checked against the installed image without
-starting a bot:
+The native contract probe must run inside the installed Hummingbot API image.
+See [local environment](docs/LOCAL_ENVIRONMENT.md), [Condor operations](docs/CONDOR.md),
+[runbook](docs/RUNBOOK.md), and [hackathon compliance](docs/HACKATHON_COMPLIANCE.md).
 
-```bash
-docker run --rm \
-  --entrypoint python \
-  -v "$PWD:/workspace:ro" \
-  -w /workspace \
-  hummingbot/hummingbot-api:latest \
-  /workspace/scripts/controller_contract_probe.py
-```
-
-The adapter reuses current Hummingbot V2 transport, controller, executor
-action, market-data, connector-rule, quantization, and recording contracts.
-The custom layer owns the multi-asset reference policy, fair value, basis,
-adaptive deadband, inventory/portfolio risk, conservative fill diagnostics,
-markouts, and research accounting. See [architecture](docs/architecture.md)
-and the retained [Hummingbot reuse audit](reports/published/hummingbot_v2_reuse_summary.md).
-
-## Public mapping audit
-
-The audit dynamically discovers active Derive perpetual instruments through
-`public/get_all_instruments`, loads exact symbols from installed Hummingbot
-derivative connector maps with `trading_required=False`, and validates the
-XRP/LINK mappings against public Binance, Bybit, and OKX contract metadata.
-No substitute symbol is selected when an exact reference is unavailable.
-
-```bash
-.venv/bin/python -m derive_multi_asset_mm.audit \
-  --config conf/mainnet_shadow.yml
-```
-
-## Shadow validation
-
-Run a bounded public-data-only probe before any longer capture:
-
-```bash
-.venv/bin/python -m derive_multi_asset_mm.shadow start \
-  --config conf/mainnet_shadow.yml \
-  --duration 10m \
-  --run-id validation_10m_<timestamp>
-
-.venv/bin/python -m derive_multi_asset_mm.shadow status \
-  --config conf/mainnet_shadow.yml \
-  --run-id validation_10m_<timestamp>
-
-.venv/bin/python -m derive_multi_asset_mm.shadow audit \
-  --config conf/mainnet_shadow.yml \
-  --run-id validation_10m_<timestamp>
-```
-
-The runner records source health, selected priority source, failovers,
-recovery hysteresis, disagreement pauses, causal Derive BBO/trade provenance,
-basis, volatility, risk state, quote plans, lifecycle events, and action-rate
-telemetry. A quote-active row is not an order submission, and a touch is not a
-fill. Conservative fills require direction-aware strict Derive trade-through;
-markout and net-capture conclusions remain insufficient when denominators are
-missing.
-
-Only after an independently reviewed preflight may a human choose to run a
-longer shadow capture:
-
-```bash
-.venv/bin/python -m derive_multi_asset_mm.shadow start \
-  --config conf/mainnet_shadow.yml \
-  --duration 6h
-```
-
-The default output paths are `logs/xrp_link_mainnet_shadow/` and
-`reports/xrp_link_mainnet_shadow/`. These generated trees are intentionally
-ignored by Git.
-
-## Dashboard
-
-The dashboard is a read-only local monitor:
-
-```bash
-.venv/bin/python -m derive_multi_asset_mm.dashboard \
-  --host 127.0.0.1 --port 8770
-open http://127.0.0.1:8770/
-```
-
-It displays mode, armed state, real-order/position counters, active assets,
-reference priority, source health, and research accounting. It exposes no
-order or arm controls.
-
-## Configuration profiles
-
-`conf/mainnet_shadow.yml` is the canonical active profile. The two-asset
-refresh profile is `conf/mainnet_shadow_refresh_research.yml`; it also contains
-only XRP and LINK and is disarmed. Older profiles containing DOGE, ADA, ZEC,
-CC, SOL, BNB, or HYPE are explicitly historical/reproducibility profiles and
-must not be used for a new run. See [configuration boundaries](conf/README.md).
-
-## Research status
-
-The retained XRP/LINK observations show that the strategy can reach internal
-quote planning for XRP, while LINK was blocked by a pre-quote notional gate in
-the short snapshot. Both assets had insufficient direct Derive trade and
-markout evidence for a viability conclusion. The later ZEC/XRP/LINK refresh
-research was also insufficient and is now historical because ZEC was retired.
-
-The known failed-run evidence records a SQLite `database is locked` error in
-the decision-rollup write path. It was captured and archived for a separate
-single-writer repair phase; this publication does not claim that the issue is
-fixed. See the compact [current status](reports/published/current_status.md)
-and [failure summary](reports/published/sqlite_failure_summary.md).
-
-## Repository
-
-The published repository is
-[`doi-doi/derive-multi-asset-adaptive-mm`](https://github.com/doi-doi/derive-multi-asset-adaptive-mm).
-
-Final classification remains `NOT_READY_FOR_SMALL_MAINNET_CANARY` until an
-evidence review demonstrates sufficient causal data, exact exchange rules,
-trade-through observations, markouts, costs, action-rate behavior, and capital
-controls. This build is intentionally live-disarmed.
+Repository: [doi-doi/derive-multi-asset-adaptive-mm](https://github.com/doi-doi/derive-multi-asset-adaptive-mm)
