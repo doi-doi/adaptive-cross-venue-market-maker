@@ -8,7 +8,7 @@ yet demonstrated it. `PENDING` is not a pass.
 |---:|---|---|---|
 | 1 | Native XRP/LINK Hummingbot V2 bot | STATIC | controller plus two configs; native run pending |
 | 2 | Permanent ownership architecture | PASS | `docs/ARCHITECTURE.md` |
-| 3 | Inspect actual Hummingbot and Condor | PARTIAL | paths/APIs/commits inspected; Docker package re-probe pending |
+| 3 | Inspect actual Hummingbot and Condor | PARTIAL | paths/APIs/commits inspected; isolated native-image CI added; local package re-probe pending |
 | 4 | Reuse existing Derive connection | STATIC | `master_account` reference only; deployment pending |
 | 5 | XRP/LINK active, others disabled | PASS | competition configs contain only XRP/LINK |
 | 6 | One reusable controller class | PASS | one concrete controller/config class |
@@ -65,7 +65,7 @@ yet demonstrated it. `PENDING` is not a pass.
 | 57 | Required tests | PASS | deterministic suite covers listed logic/invariants |
 | 58 | No Binance executor action | PASS | runtime action test and source invariant |
 | 59 | GitHub safety | PASS | ignore rules plus secret/large-file scans |
-| 60 | Branch/test/scan/push workflow | PASS | branch `codex/hummingbot-condor-final`, draft PR #1 |
+| 60 | Branch/test/scan/push workflow | PASS | branch `codex/hummingbot-condor-final`, draft PR #1, repository CI |
 | 61 | Final native shadow validation | PENDING | not run; no live trading started |
 | 62 | Exact final report | PARTIAL | emitted in handoff; runtime fields remain pending |
 | 63 | Architecture frozen after build | PASS | architecture and next parameter-only phase documented |
