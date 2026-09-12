@@ -1,4 +1,4 @@
-"""Immediate read-only status for the detached three-asset shadow run."""
+"""Immediate read-only status for the detached XRP/LINK shadow run."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _status(state_path: Path, telemetry_path: Path, metadata_path: Path) -> dict[str, Any]:
     state = _read_json(state_path)
     metadata = _read_json(metadata_path)
-    assets = [str(asset) for asset in (metadata.get("assets") or state.get("active_assets") or ["DOGE", "ADA", "XRP"])]
+    assets = [str(asset) for asset in (metadata.get("assets") or state.get("active_assets") or ["XRP", "LINK"])]
     started = float(state.get("started_at") or time.time())
     ended = state.get("ended_at")
     now = float(ended or time.time())

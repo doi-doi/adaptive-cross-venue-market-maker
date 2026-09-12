@@ -1,3 +1,5 @@
+# Historical three-asset comparison profile: XRP, LINK, and ZEC. Do not use
+# for new runs; use conf/mainnet_shadow.yml instead.
 mode: MAINNET_SHADOW
 dry_run: true
 mainnet_armed: false

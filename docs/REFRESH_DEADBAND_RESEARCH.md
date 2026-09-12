@@ -1,12 +1,12 @@
-# ZEC / XRP / LINK refresh-deadband research phase
+# XRP / LINK refresh-deadband research phase
 
-This is the next active research phase. It preserves the currently running
-six-hour mid-price baseline and all historical DOGE/ADA evidence; it does not
-rewrite or delete those artifacts.
+This is the current refresh-deadband research profile. It preserves the
+historical ZEC, DOGE, and ADA evidence; it does not rewrite or delete those
+artifacts.
 
 ## Scope
 
-- Active universe: `ZEC`, `XRP`, `LINK` only.
+- Active universe: `XRP`, `LINK` only.
 - Reference path: `Binance -> Bybit -> OKX -> Pause`.
 - Bitget is disabled. References are data-only; Derive is the only execution
   venue in the unarmed shadow design.
@@ -58,21 +58,21 @@ selected merely from fill count or touch events.
 
 ## Artifacts
 
-The required report directory is
-`reports/zec_xrp_link_refresh_research/`. The analyzer writes the complete
+The required report directory for a new run is
+`reports/xrp_link_refresh_research/`. The analyzer writes the complete
 CSV set plus `final_refresh_research.md` and
 `final_refresh_research.json`. It can be rerun without modifying telemetry:
 
 ```bash
 .venv/bin/python scripts/derive_rate_limit_audit.py \
-  --out-dir reports/zec_xrp_link_refresh_research
+  --out-dir reports/xrp_link_refresh_research
 
 .venv/bin/python scripts/run_refresh_research.py \
   --config conf/mainnet_shadow_refresh_research.yml \
-  --telemetry logs/zec_xrp_link_refresh_research/<run-id>/telemetry.sqlite \
-  --state logs/zec_xrp_link_refresh_research/<run-id>/state.json \
-  --mapping reports/zec_xrp_link_refresh_research/<run-id>/asset_reference_mapping.json \
-  --out-dir reports/zec_xrp_link_refresh_research
+  --telemetry logs/xrp_link_refresh_research/<run-id>/telemetry.sqlite \
+  --state logs/xrp_link_refresh_research/<run-id>/state.json \
+  --mapping reports/xrp_link_refresh_research/<run-id>/asset_reference_mapping.json \
+  --out-dir reports/xrp_link_refresh_research
 ```
 
 The final classification remains `REFRESH_RESEARCH_DATA_INSUFFICIENT` until

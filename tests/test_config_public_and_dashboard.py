@@ -36,6 +36,18 @@ def test_shadow_defaults_are_mainnet_and_unarmed():
     assert config.derive_connector == "derive_perpetual"
 
 
+def test_canonical_profile_is_xrp_link_only_and_bitget_free():
+    project_root = Path(__file__).resolve().parents[1]
+    config = RuntimeConfig.from_yaml(project_root / "conf/mainnet_shadow.yml")
+    assert [asset.symbol for asset in config.enabled_assets] == ["XRP", "LINK"]
+    assert config.max_active_assets == 2
+    assert config.reference_venues == ("binance", "bybit", "okx")
+    assert config.reference_priority == ("binance", "bybit", "okx")
+    assert config.bitget_enabled is False
+    assert config.mainnet_armed is False
+    assert config.dry_run is True
+
+
 def test_quote_refresh_policy_is_two_percent_from_derive_mid():
     config = base_mapping_config()
     assert config.refresh_tolerance_bps == Decimal("200")
@@ -224,7 +236,7 @@ def test_public_book_parser_accepts_binance_usdm_depth_arrays():
 
 def test_dashboard_is_read_only_and_has_safety_banner():
     html = (Path(__file__).parents[1] / "dashboard/index.html").read_text(encoding="utf-8")
-    assert "DERIVE MULTI-ASSET BINANCE-REFERENCE ADAPTIVE MM" in html
+    assert "DERIVE MULTI-ASSET ADAPTIVE MM" in html
     assert "MAINNET SHADOW — NO REAL ORDERS." in html
     assert "setInterval(refresh, 1000)" in html
     assert "/api/minute-aggregates" in html
@@ -238,7 +250,7 @@ def test_dashboard_is_read_only_and_has_safety_banner():
 
 
 def test_dashboard_serves_minute_aggregate_rows_from_six_hour_store(tmp_path):
-    database = tmp_path / "logs" / "priority_reference_3asset_6h" / "telemetry.sqlite"
+    database = tmp_path / "logs" / "xrp_link_mainnet_shadow" / "telemetry.sqlite"
     config = base_mapping_config(database_path=str(database))
     timestamp = time.time()
     with TelemetryStore(database, storage_config=config) as telemetry:
@@ -280,8 +292,8 @@ def test_dashboard_serves_minute_aggregate_rows_from_six_hour_store(tmp_path):
 
 
 def test_dashboard_selects_newest_isolated_six_hour_run(tmp_path):
-    base_log = tmp_path / "logs" / "priority_reference_3asset_6h"
-    base_report = tmp_path / "reports" / "priority_reference_3asset_6h"
+    base_log = tmp_path / "logs" / "xrp_link_mainnet_shadow"
+    base_report = tmp_path / "reports" / "xrp_link_mainnet_shadow"
     base_log.mkdir(parents=True)
     base_report.mkdir(parents=True)
     now = time.time()

@@ -7,8 +7,9 @@ binance_connector: binance_perpetual
 multi_reference: false
 reference_selection_mode: PRIORITY_FAILOVER
 
-# Two-asset replacement profile: DOGE and ADA are excluded from this run.
-# Bitget remains excluded because its public feed was intermittent.
+# Current two-asset replacement profile: XRP and LINK only. DOGE and ADA are
+# historical-only. Bitget remains excluded because its public feed was
+# intermittent.
 bitget_enabled: false
 bitget_primary_enabled: false
 reference_venues: [binance, bybit, okx]
@@ -91,6 +92,6 @@ assets:
     enabled: true
     order_size_multiplier: 1
 
-report_dir: reports/priority_reference_3asset_6h
-log_dir: logs/priority_reference_3asset_6h
-database_path: logs/priority_reference_3asset_6h/telemetry.sqlite
+report_dir: reports/xrp_link_mainnet_shadow
+log_dir: logs/xrp_link_mainnet_shadow
+database_path: logs/xrp_link_mainnet_shadow/telemetry.sqlite

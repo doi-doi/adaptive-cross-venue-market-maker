@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DERIVE MULTI-ASSET MULTI-VENUE ADAPTIVE MM MAINNET SHADOW MONITOR — PRIORITY REFERENCE — DERIVE MULTI-ASSET BINANCE-REFERENCE ADAPTIVE MM</title>
+  <title>DERIVE MULTI-ASSET ADAPTIVE MM — XRP/LINK MAINNET SHADOW MONITOR</title>
   <style>
     :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e9eefb; }
     html { overflow-x: hidden; }
@@ -37,7 +37,7 @@
   </style>
 </head>
 <body>
-  <h1>DERIVE MULTI-ASSET MULTI-VENUE ADAPTIVE MM MAINNET SHADOW MONITOR</h1>
+  <h1>DERIVE MULTI-ASSET ADAPTIVE MM · XRP/LINK MAINNET SHADOW MONITOR</h1>
   <div class="banner">
     <div><strong>DERIVE MAINNET · PUBLIC DATA ONLY</strong></div>
     <div>MODE: <span id="mode">MAINNET_SHADOW</span> · MAINNET ARMED: <span id="armed">FALSE</span></div>
@@ -45,6 +45,7 @@
     <div>CURRENT RUN ID: <span id="run-id">—</span></div>
     <div>REFERENCE VENUES: <span id="reference-venues">BINANCE → BYBIT → OKX</span></div>
     <div>REFERENCE PRIORITY: <span id="priority">BINANCE → BYBIT → OKX → PAUSE</span></div>
+    <div>BITGET: <span id="bitget-status">DISABLED</span></div>
     <div><strong>MAINNET SHADOW — NO REAL ORDERS.</strong> Derive is the only execution venue; reference venues are data-only.</div>
   </div>
   <section class="grid" id="summary"></section>
@@ -304,6 +305,7 @@
       document.getElementById('priority').textContent = (state.reference_priority || (report && report.reference_priority) || ['binance','bybit','okx']).join(' → ').toUpperCase() + ' → PAUSE';
       const referenceVenues = activeReferenceVenues(state);
       document.getElementById('reference-venues').textContent = referenceVenues.map(venue => String(venue).toUpperCase()).join(' → ');
+      document.getElementById('bitget-status').textContent = referenceVenues.includes('bitget') ? 'NOT ACTIVE PROFILE' : 'DISABLED';
       const models = state.models || {};
       const selected = models['PRIORITY_FAILOVER:CONSERVATIVE'] || models['MULTI_SOURCE_CONSENSUS:CONSERVATIVE'] || models['BINANCE_ONLY_REFERENCE:CONSERVATIVE'] || {};
       const reportSummary = (report && report.summary) || {};

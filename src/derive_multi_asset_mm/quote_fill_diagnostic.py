@@ -1647,7 +1647,7 @@ def _asset_root_cause_rows(
 
 def _summary_markdown(summary: dict[str, Any]) -> str:
     lines = [
-        "# Derive three-asset quote/fill diagnostic",
+        "# Derive quote/fill diagnostic",
         "",
         f"- Diagnostic status: `{summary.get('diagnostic_status')}`",
         f"- Run: `{summary.get('run_id')}` / PID `{summary.get('pid')}`",

@@ -1,4 +1,4 @@
-"""Measurement-only exporter for the three-asset six-hour shadow run.
+"""Measurement-only exporter for the active XRP/LINK six-hour shadow run.
 
 The exporter reads the completed run's SQLite telemetry and state files. It
 does not change strategy configuration, orders, or telemetry. When invoked
@@ -1445,7 +1445,7 @@ def export(
     _write_json(metadata_path, metadata)
     per_asset = {asset: {**next(row for row in activity if row["asset"] == asset), "feed_classification": next(row["classification"] for row in feed if row["asset"] == asset), "conservative_fills": next(row["fill_count"] for row in volume_rows if row["asset"] == asset and row["model"] == "PRIORITY_FAILOVER:CONSERVATIVE"), "touch_fills": next(row["fill_count"] for row in volume_rows if row["asset"] == asset and row["model"] == "PRIORITY_FAILOVER:TOUCH_SENSITIVITY") } for asset in assets}
     final_report = {
-        "report_version": "three-asset-six-hour-viability-v1",
+        "report_version": "multi-asset-six-hour-viability-v1",
         "measurement_only": True,
         "status": status,
         "run_metadata": metadata,
@@ -1483,7 +1483,7 @@ def export(
     }
     _write_json(out_dir / "final_6h_validation_report.json", final_report)
     lines = [
-        "# DERIVE THREE-ASSET SIX-HOUR VIABILITY AUDIT COMPLETE",
+        "# DERIVE MULTI-ASSET SIX-HOUR VIABILITY AUDIT COMPLETE",
         "",
         f"- Status: `{status}`",
         f"- Observation: `{duration:.3f}` seconds",
@@ -1581,7 +1581,7 @@ def main() -> int:
         Path(args.diagnostic_out_dir) if args.diagnostic_out_dir else None,
     )
     if report is not None:
-        print("DERIVE THREE-ASSET SIX-HOUR VIABILITY AUDIT COMPLETE")
+        print("DERIVE MULTI-ASSET SIX-HOUR VIABILITY AUDIT COMPLETE")
         print(json.dumps({"status": report["status"], "classification": report["final_classification"], "report_dir": args.out_dir}, indent=2))
     return 0
 

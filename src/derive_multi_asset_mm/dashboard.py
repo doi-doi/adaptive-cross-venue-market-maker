@@ -69,21 +69,15 @@ def _finite_float(value: object) -> float | None:
 
 
 def make_handler(root: Path):
-    priority_state_base = root / "logs/priority_reference_3asset"
-    priority_report_base = root / "reports/priority_reference_3asset"
-    priority_telemetry_base = root / "logs/priority_reference_3asset"
-    validation6h_log_base = root / "logs/priority_reference_3asset_6h"
-    validation6h_report_base = root / "reports/priority_reference_3asset_6h"
-    refresh_log_base = root / "logs/zec_xrp_link_refresh_research"
-    refresh_report_base = root / "reports/zec_xrp_link_refresh_research"
+    priority_state_base = root / "logs/xrp_link_mainnet_shadow"
+    priority_report_base = root / "reports/xrp_link_mainnet_shadow"
+    priority_telemetry_base = root / "logs/xrp_link_mainnet_shadow"
+    validation6h_log_base = root / "logs/xrp_link_mainnet_shadow"
+    validation6h_report_base = root / "reports/xrp_link_mainnet_shadow"
+    refresh_log_base = root / "logs/xrp_link_refresh_research"
+    refresh_report_base = root / "reports/xrp_link_refresh_research"
     accounting_repair_base = root / "reports/dashboard_accounting_repair"
     quote_fill_diagnostic_base = root / "reports/quote_fill_diagnostic"
-    multi_state_path = root / "logs/multi_reference_shadow/state.json"
-    multi_report_path = root / "reports/multi_reference_shadow/final_multi_reference_shadow_report.json"
-    multi_telemetry_path = root / "logs/multi_reference_shadow/telemetry.sqlite"
-    legacy_state_path = root / "logs/mainnet_shadow/state.json"
-    legacy_report_path = root / "reports/mainnet_shadow/final_multi_asset_shadow_report.json"
-    legacy_telemetry_path = root / "logs/mainnet_shadow/telemetry.sqlite"
     index_path = root / "dashboard/index.html"
     validation6h_cache: tuple[float, dict] | None = None
 
@@ -96,7 +90,7 @@ def make_handler(root: Path):
         return max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
 
     def refresh_context() -> tuple[Path, Path, Path, Path] | None:
-        """Resolve the newest ZEC/XRP/LINK refresh run, if one exists."""
+        """Resolve the newest XRP/LINK refresh run, if one exists."""
 
         candidates: list[tuple[float, Path]] = []
         if refresh_log_base.is_dir():
@@ -188,20 +182,10 @@ def make_handler(root: Path):
         if any(path.exists() for path in six_hour):
             return six_hour
         return (
-            selected_artifact(priority_state_base, "state.json", multi_state_path, legacy_state_path),
-            selected_artifact(
-                priority_report_base,
-                "final_report.json",
-                multi_report_path,
-                legacy_report_path,
-            ),
+            priority_state_base / "state.json",
+            priority_report_base / "final_report.json",
             priority_report_base / "run_metadata.json",
-            selected_artifact(
-                priority_telemetry_base,
-                "telemetry.sqlite",
-                multi_telemetry_path,
-                legacy_telemetry_path,
-            ),
+            priority_telemetry_base / "telemetry.sqlite",
         )
 
     def context_run_id(context: tuple[Path, Path, Path, Path]) -> str | None:
@@ -216,8 +200,6 @@ def make_handler(root: Path):
             refresh_log_base.name,
             validation6h_log_base.name,
             priority_telemetry_base.name,
-            multi_telemetry_path.parent.name,
-            legacy_telemetry_path.parent.name,
         }:
             return parent_name
         return None
@@ -232,8 +214,8 @@ def make_handler(root: Path):
         return selected_artifact(
             priority_telemetry_base,
             "telemetry.sqlite",
-            multi_telemetry_path,
-            legacy_telemetry_path,
+            priority_telemetry_base / "telemetry.sqlite",
+            priority_telemetry_base / "telemetry.sqlite",
         )
 
     def csv_rows(path: Path) -> list[dict[str, str]]:

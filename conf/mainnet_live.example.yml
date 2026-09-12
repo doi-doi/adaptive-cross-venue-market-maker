@@ -1,15 +1,17 @@
-# Explicit live template only. This file is never used by the shadow runner.
-# It is intentionally armed because MAINNET_LIVE requires both this mode and
-# mainnet_armed=true; using it is a separate, post-build authorization step.
-mode: MAINNET_LIVE
-dry_run: false
-mainnet_armed: true
+# Explicit live-shape template only. This file is never used by the shadow
+# runner and is intentionally disarmed. A human authorization process would
+# need to create and review a separate live configuration; this repository
+# never ships an armed default.
+mode: MAINNET_SHADOW
+dry_run: true
+mainnet_armed: false
 derive_connector: derive_perpetual
 binance_connector: binance_perpetual
-reference_connectors: [binance_perpetual, bybit_perpetual, okx_perpetual, bitget_perpetual]
+reference_connectors: [binance_perpetual, bybit_perpetual, okx_perpetual]
 multi_reference: false
 reference_selection_mode: PRIORITY_FAILOVER
 reference_priority: [binance, bybit, okx]
+bitget_enabled: false
 bitget_primary_enabled: false
 recovery_min_healthy_seconds: 3
 reference_healthy_seconds: 2
@@ -18,7 +20,7 @@ minimum_reference_sources: 1
 reference_outlier_bps: 50
 reference_disagreement_pause_bps: 25
 capital_usdc: 800
-max_active_assets: 3
+max_active_assets: 2
 order_size_multiplier: 1
 maker_fee_bps: 1
 fair_value_mid_weight: 0.5
@@ -55,9 +57,8 @@ aggressive_spread_max_bps: 15
 defensive_spread_min_bps: 3
 fast_move_threshold_bps: 8
 assets:
-  DOGE: {enabled: true}
-  ADA: {enabled: true}
   XRP: {enabled: true}
-report_dir: reports/mainnet_shadow
-log_dir: logs/mainnet_shadow
-database_path: logs/mainnet_shadow/telemetry.sqlite
+  LINK: {enabled: true}
+report_dir: reports/xrp_link_mainnet_shadow
+log_dir: logs/xrp_link_mainnet_shadow
+database_path: logs/xrp_link_mainnet_shadow/telemetry.sqlite

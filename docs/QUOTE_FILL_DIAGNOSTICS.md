@@ -9,10 +9,10 @@ For a live or completed run:
 
 ```text
 ./.venv/bin/python scripts/quote_fill_diagnostic.py \
-  --config conf/mainnet_shadow_3asset_6h.yml \
-  --telemetry logs/priority_reference_3asset_6h/<run_id>/telemetry.sqlite \
-  --state logs/priority_reference_3asset_6h/<run_id>/state.json \
-  --run-metadata reports/priority_reference_3asset_6h/<run_id>/run_metadata.json \
+  --config conf/mainnet_shadow.yml \
+  --telemetry logs/xrp_link_mainnet_shadow/<run_id>/telemetry.sqlite \
+  --state logs/xrp_link_mainnet_shadow/<run_id>/state.json \
+  --run-metadata reports/xrp_link_mainnet_shadow/<run_id>/run_metadata.json \
   --out-dir reports/quote_fill_diagnostic/<run_id>
 ```
 
@@ -22,7 +22,8 @@ run finalization.
 
 Each per-run output also includes `asset_root_cause.csv`, preserving the
 classification, evidence status, trade/crossing/fill counts, lifetime, churn,
-and potential churn-missed-fill denominators for DOGE, ADA, and XRP.
+and potential churn-missed-fill denominators for XRP and LINK. Historical
+reports may contain the retired assets they measured at the time.
 
 The diagnostic uses receipt-time causality, strict conservative trade-through,
 separate touch sensitivity, and no forward-fill across an observation gap. The
@@ -40,13 +41,11 @@ when those runs were collected.
 
 ## Bitget boundary
 
-`conf/mainnet_shadow_3asset_6h.yml` and its explicit successor copy
-`conf/mainnet_shadow_3asset_6h_no_bitget.yml` set `bitget_enabled: false`,
-configure only Binance, Bybit, and OKX, and preserve the priority order
-Binance -> Bybit -> OKX -> PAUSE. The currently running PID was loaded with
-Bitget in its venue list; changing the file cannot cancel that process's
-websocket/reconnect task. The update therefore reports
-`RESTART_REQUIRED_TO_REMOVE_BITGET` and leaves the current fixed run intact.
+The canonical `conf/mainnet_shadow.yml` and the current successor profiles set
+`bitget_enabled: false`, configure only Binance, Bybit, and OKX, and preserve
+the priority order Binance -> Bybit -> OKX -> PAUSE. Historical run processes
+may have loaded an older venue list; changing a file cannot alter an already
+running process, so a new run is required to apply the active profile.
 
 The dashboard reads `reports/quote_fill_diagnostic/<run_id>/diagnostic_summary.json`
 and exposes the quote/fill and storage panels at `http://127.0.0.1:8770/`.

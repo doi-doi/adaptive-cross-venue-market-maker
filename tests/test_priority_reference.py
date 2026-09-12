@@ -135,6 +135,7 @@ def test_priority_config_defaults_to_three_assets_and_three_source_order():
     config = RuntimeConfig.from_mapping(
         {
             "reference_selection_mode": "PRIORITY_FAILOVER",
+            "bitget_enabled": True,
             "reference_venues": ["binance", "bybit", "okx", "bitget"],
             "reference_priority": ["binance", "bybit", "okx"],
             "bitget_primary_enabled": False,
@@ -151,6 +152,7 @@ def test_priority_report_contract_writes_all_required_files(tmp_path):
     config = RuntimeConfig.from_mapping(
         {
             "reference_selection_mode": "PRIORITY_FAILOVER",
+            "bitget_enabled": True,
             "reference_venues": ["binance", "bybit", "okx", "bitget"],
             "assets": {"DOGE": {}, "ADA": {}, "XRP": {}},
             "max_active_assets": 3,

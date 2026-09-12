@@ -27,13 +27,12 @@ def _bool(value: Any, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class RuntimeConfig:
     multi_reference: bool = False
-    reference_venues: tuple[str, ...] = ("binance", "bybit", "okx", "bitget")
+    reference_venues: tuple[str, ...] = ("binance", "bybit", "okx")
     reference_selection_mode: str = "LEGACY"
     reference_priority: tuple[str, ...] = ("binance", "bybit", "okx")
-    # Kept true by default for backwards compatibility with historical
-    # profiles. New profiles should set this explicitly and omit Bitget from
-    # reference_venues so the venue is not even scheduled at runtime.
-    bitget_enabled: bool = True
+    # Bitget is an explicit historical opt-in only. The active default is
+    # fail-closed and omits the venue from scheduling entirely.
+    bitget_enabled: bool = False
     bitget_primary_enabled: bool = False
     recovery_min_healthy_seconds: float = 3.0
     reference_healthy_seconds: float = 2.0
@@ -162,7 +161,7 @@ class RuntimeConfig:
                     ),
                 )
             )
-        reference_venues_raw = raw.get("reference_venues") or ("binance", "bybit", "okx", "bitget")
+        reference_venues_raw = raw.get("reference_venues") or ("binance", "bybit", "okx")
         if isinstance(reference_venues_raw, str):
             reference_venues_raw = [reference_venues_raw]
         reference_priority_raw = raw.get("reference_priority") or ("binance", "bybit", "okx")
@@ -179,7 +178,7 @@ class RuntimeConfig:
                 str(venue).strip().lower()
                 for venue in reference_priority_raw
             ),
-            bitget_enabled=_bool(raw.get("bitget_enabled"), True),
+            bitget_enabled=_bool(raw.get("bitget_enabled"), False),
             bitget_primary_enabled=_bool(raw.get("bitget_primary_enabled"), False),
             recovery_min_healthy_seconds=float(raw.get("recovery_min_healthy_seconds", 3)),
             reference_healthy_seconds=float(raw.get("reference_healthy_seconds", 2)),

@@ -1,39 +1,78 @@
+# Python and local tooling
 .venv/
 __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
 *.py[cod]
+.coverage
+htmlcov/
+
+# macOS and IDE metadata
 .DS_Store
+.idea/
+.vscode/
+.fleet/
 
-# Runtime telemetry and generated research artifacts stay local. They can
-# contain large archives and run-specific operational data; source/config/docs
-# remain versioned below.
-logs/*
-!logs/mainnet_shadow/
-logs/mainnet_shadow/*
-!logs/mainnet_shadow/.gitkeep
-
-reports/*
-!reports/mainnet_shadow/
-reports/mainnet_shadow/*
-!reports/mainnet_shadow/.gitkeep
-
-!logs/multi_reference_shadow/
-logs/multi_reference_shadow/*
-!logs/multi_reference_shadow/.gitkeep
-!reports/multi_reference_shadow/
-reports/multi_reference_shadow/*
-!reports/multi_reference_shadow/.gitkeep
-
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-*.pid
-*.tmp
-
-# Never store credentials in this project.
+# Credentials and secrets: names and values stay out of Git.
 .env
-*.secret
-*.key
+.env.*
+!.env.example
 *.pem
+*.key
+*.crt
+credentials*
+secrets*
+api_keys*
+*.secret
+
+# Runtime telemetry, logs, and process markers
+logs/
+*.log
+*.out
+*.err
+*.pid
+*.lock
+*.tmp
+*.tmp.*
+tmp/
+temp/
+runtime/
+
+# SQLite and other local database variants, including sidecars
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite.*
+*.db
+*.db-*
+*.db.*
+*.duckdb
+*.duckdb-*
+
+# Raw market-data and telemetry payloads
+**/raw/
+**/telemetry/
+data/raw/
+**/*bbo*
+**/*tick*
+**/*orderbook_raw*
+*.jsonl
+*.ndjson
+chunks/
+**/chunks/
+completed_raw/
+**/completed_raw/
+cache/
+**/cache/
+dashboard/cache/
+
+# Generated reports are local evidence. Only compact, reviewed summaries are
+# published under reports/published/.
+reports/*
+!reports/
+!reports/published/
+!reports/published/**

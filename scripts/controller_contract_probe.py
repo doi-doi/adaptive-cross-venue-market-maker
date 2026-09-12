@@ -60,7 +60,7 @@ async def main() -> None:
     config = DeriveMultiAssetBinanceMMConfig(
         id="contract_probe",
         controller_name="derive_multi_asset_binance_reference_mm",
-        assets=["DOGE", "ADA", "XRP"],
+        assets=["XRP", "LINK"],
         max_active_assets=3,
     )
     controller = DeriveMultiAssetBinanceMMController(config, _Provider(), asyncio.Queue())

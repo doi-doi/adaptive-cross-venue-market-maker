@@ -48,19 +48,20 @@ class DeriveMultiAssetBinanceMMConfig(ControllerConfigBase):
     mainnet_armed: bool = Field(default=False)
     derive_connector: str = Field(default="derive_perpetual")
     binance_connector: str = Field(default="binance_perpetual")
-    reference_connectors: list[str] = Field(default_factory=lambda: ["binance_perpetual", "bybit_perpetual", "okx_perpetual", "bitget_perpetual"])
+    reference_connectors: list[str] = Field(default_factory=lambda: ["binance_perpetual", "bybit_perpetual", "okx_perpetual"])
     multi_reference: bool = Field(default=False)
     reference_selection_mode: str = Field(default="PRIORITY_FAILOVER")
     reference_priority: list[str] = Field(default_factory=lambda: ["binance", "bybit", "okx"])
+    bitget_enabled: bool = Field(default=False)
     bitget_primary_enabled: bool = Field(default=False)
     recovery_min_healthy_seconds: float = Field(default=3.0, gt=0)
     reference_healthy_seconds: Decimal = Field(default=Decimal("2"), gt=0)
     minimum_reference_sources: int = Field(default=1, ge=1, le=4)
     reference_outlier_bps: Decimal = Field(default=Decimal("50"), gt=0)
     reference_disagreement_pause_bps: Decimal = Field(default=Decimal("25"), gt=0)
-    assets: list[str] = Field(default_factory=lambda: ["DOGE", "ADA", "XRP"])
+    assets: list[str] = Field(default_factory=lambda: ["XRP", "LINK"])
     capital_usdc: Decimal = Field(default=Decimal("800"), gt=0)
-    max_active_assets: int = Field(default=3, ge=1)
+    max_active_assets: int = Field(default=2, ge=1)
     order_size_multiplier: Decimal = Field(default=Decimal("1"), gt=0)
     maker_fee_bps: Decimal = Field(default=Decimal("1"), ge=0)
     fair_value_mid_weight: Decimal = Field(default=Decimal("0.5"), ge=0)
@@ -119,6 +120,8 @@ class DeriveMultiAssetBinanceMMConfig(ControllerConfigBase):
             raise ValueError("reference_selection_mode must be LEGACY or PRIORITY_FAILOVER")
         priority = tuple(str(venue).strip().lower() for venue in self.reference_priority)
         configured = {connector.removesuffix("_perpetual") for connector in self.reference_connectors}
+        if not self.bitget_enabled and "bitget" in configured:
+            raise ValueError("bitget_enabled=false requires bitget_perpetual to be absent from reference_connectors")
         if not priority or len(set(priority)) != len(priority) or any(venue not in configured for venue in priority):
             raise ValueError("reference_priority must contain unique configured venues")
         if selection_mode == "PRIORITY_FAILOVER" and priority != ("binance", "bybit", "okx"):

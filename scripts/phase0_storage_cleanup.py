@@ -11,6 +11,7 @@ watcher.
 Usage:
     python scripts/phase0_storage_cleanup.py --project-root . audit
     python scripts/phase0_storage_cleanup.py --project-root . execute
+    python scripts/phase0_storage_cleanup.py --project-root . --output-dir reports/project_cleanup audit
 
 The execute command consumes the generated cleanup_manifest_before.csv from
 the dated report directory.  It is deliberately fail-closed if that manifest
@@ -953,9 +954,7 @@ def classify_file(root: Path, path: Path, contexts: list[dict[str, Any]], proces
             return classification_entry(path, run_id, "TIER_B_KEEP_COMPRESSED", "COMPRESS", "closed SQLite sidecar archived with its database bundle", context)
         if allocated_size(path) == 0 and not (context and status not in TERMINAL_STATUSES):
             return classification_entry(path, run_id, "TIER_C_SAFE_TO_DELETE", "DELETE", "zero-byte closed SQLite sidecar", context)
-        if context and status in TERMINAL_STATUSES:
-            return classification_entry(path, run_id, "TIER_B_KEEP_COMPRESSED", "COMPRESS", "closed historical SQLite sidecar retained in an archive", context)
-        return classification_entry(path, run_id, "TIER_D_ACTIVE_DO_NOT_TOUCH", "ACTIVE_SKIP", "non-empty SQLite sidecar is ambiguous without a closed database owner", context)
+        return classification_entry(path, run_id, "TIER_D_ACTIVE_DO_NOT_TOUCH", "ACTIVE_SKIP", "non-empty SQLite sidecar is ambiguous without a verified closed database owner", context)
     if ftype == "sqlite_database":
         if eligible_closed_context(context, path, open_paths):
             if status == "FAILED" and context.get("run_id") == "zec_xrp_link_refresh_20260909T142815Z":
@@ -1112,7 +1111,11 @@ def disk_snapshot(root: Path, entries: list[dict[str, Any]] | None = None) -> di
 
 
 def write_disk_usage(root: Path, path: Path, snapshot: dict[str, Any], *, processes: list[dict[str, Any]], open_paths: dict[str, list[int]], entries: list[dict[str, Any]], label: str) -> None:
-    target_gb = max(20.0, snapshot["total_gb"] * 0.10)
+    # The 10%-of-filesystem target is only required when the project itself
+    # remains larger than 10 GiB after cleanup. A small project should report
+    # the explicit 20 GiB preferred free-space target without manufacturing a
+    # deficit from unrelated filesystem usage.
+    target_gb = max(20.0, snapshot["total_gb"] * 0.10) if snapshot["project_size_gb"] > 10.0 else 20.0
     lines = [
         f"PHASE 0 STORAGE AUDIT — {label}",
         f"observed_at_utc: {snapshot['observed_at_utc']}",
@@ -1307,7 +1310,7 @@ def after_reports(root: Path, output: Path, before_snapshot: dict[str, Any], cle
     write_csv(output / "largest_directories_after.csv", directory_rows(root, contexts, entries, exclude_output=False), ["path", "size_bytes", "size_gb", "modified_time", "run_id", "file_type", "classification"])
     manifest_fields = ["path", "size_bytes", "size_gb", "modified_time", "run_id", "classification", "reason", "planned_action"]
     write_csv(output / "cleanup_manifest_after.csv", entries, manifest_fields)
-    target_gb = max(20.0, snapshot["total_gb"] * 0.10)
+    target_gb = max(20.0, snapshot["total_gb"] * 0.10) if snapshot["project_size_gb"] > 10.0 else 20.0
     summary = {
         "status": "EMERGENCY PROJECT STORAGE CLEANUP COMPLETE",
         "observed_at_utc": utc_now(),
@@ -1390,12 +1393,22 @@ def after_reports(root: Path, output: Path, before_snapshot: dict[str, Any], cle
 
 
 def main(argv: list[str] | None = None) -> int:
+    global OUTPUT_RELATIVE
+
     parser = argparse.ArgumentParser(description="Phase 0 project-local storage recovery")
     parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="report directory below the project root (default: reports/storage_cleanup_20260912)",
+    )
     parser.add_argument("command", choices=("audit", "execute"))
     args = parser.parse_args(argv)
     root = canonical_root(args.project_root)
-    output = safe_path(root, root / OUTPUT_RELATIVE)
+    output_candidate = root / OUTPUT_RELATIVE if args.output_dir is None else args.output_dir
+    output = safe_path(root, output_candidate)
+    OUTPUT_RELATIVE = output.relative_to(root)
     contexts = build_run_contexts(root)
     processes, active_pids = discover_processes(root)
     open_paths = discover_open_paths(active_pids)

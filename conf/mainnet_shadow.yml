@@ -6,7 +6,8 @@ derive_connector: derive_perpetual
 binance_connector: binance_perpetual
 multi_reference: false
 reference_selection_mode: PRIORITY_FAILOVER
-reference_venues: [binance, bybit, okx, bitget]
+bitget_enabled: false
+reference_venues: [binance, bybit, okx]
 reference_priority: [binance, bybit, okx]
 bitget_primary_enabled: false
 recovery_min_healthy_seconds: 3
@@ -16,7 +17,6 @@ reference_stale_overrides:
   binance: 5
   bybit: 5
   okx: 5
-  bitget: 5
 reference_outlier_bps: 50
 reference_disagreement_pause_bps: 25
 minimum_reference_sources: 1
@@ -44,11 +44,9 @@ bybit_instruments_url: https://api.bybit.com/v5/market/instruments-info?category
 bybit_websocket_url: wss://stream.bybit.com/v5/public/linear
 okx_instruments_url: https://www.okx.com/api/v5/public/instruments?instType=SWAP
 okx_websocket_url: wss://ws.okx.com:8443/ws/v5/public
-bitget_contracts_url: https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES
-bitget_websocket_url: wss://ws.bitget.com/v2/ws/public
 
 capital_usdc: 800
-max_active_assets: 3
+max_active_assets: 2
 order_size_multiplier: 1
 maker_fee_bps: 1
 fair_value_mid_weight: 0.5
@@ -84,19 +82,17 @@ aggressive_spread_max_bps: 15
 defensive_spread_min_bps: 3
 fast_move_threshold_bps: 8
 
-# Logical asset names are validated against current public Derive instruments,
-# installed Hummingbot connector symbol maps, and exact active public markets.
+# Canonical active universe. Logical names are validated against current public
+# Derive instruments, installed Hummingbot connector symbol maps, and exact
+# active public markets.
 assets:
-  DOGE:
-    enabled: true
-    order_size_multiplier: 1
-  ADA:
-    enabled: true
-    order_size_multiplier: 1
   XRP:
     enabled: true
     order_size_multiplier: 1
+  LINK:
+    enabled: true
+    order_size_multiplier: 1
 
-report_dir: reports/priority_reference_3asset
-log_dir: logs/priority_reference_3asset
-database_path: logs/priority_reference_3asset/telemetry.sqlite
+report_dir: reports/xrp_link_mainnet_shadow
+log_dir: logs/xrp_link_mainnet_shadow
+database_path: logs/xrp_link_mainnet_shadow/telemetry.sqlite

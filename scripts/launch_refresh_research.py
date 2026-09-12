@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the isolated, shadow-only ZEC/XRP/LINK refresh research phase."""
+"""Launch the isolated, shadow-only XRP/LINK refresh research phase."""
 
 from __future__ import annotations
 
@@ -143,7 +143,7 @@ def main() -> int:
     metadata = {
         "run_id": args.run_id,
         "status": "RUNNING",
-        "phase": "ZEC_XRP_LINK_REFRESH_DEADBAND_RESEARCH",
+        "phase": "XRP_LINK_REFRESH_DEADBAND_RESEARCH",
         "start_time_utc": _iso(started_at),
         "planned_end_time_utc": _iso(started_at + duration),
         "start_time_epoch": started_at,

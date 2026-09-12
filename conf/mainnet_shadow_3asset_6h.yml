@@ -1,3 +1,5 @@
+# Historical three-asset DOGE/ADA/XRP profile retained for reproducibility.
+# Do not use for new runs; use conf/mainnet_shadow.yml instead.
 mode: MAINNET_SHADOW
 dry_run: true
 mainnet_armed: false

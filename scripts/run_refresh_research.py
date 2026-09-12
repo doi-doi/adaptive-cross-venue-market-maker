@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the read-only ZEC/XRP/LINK refresh-deadband research artifacts."""
+"""Generate the read-only XRP/LINK refresh-deadband research artifacts."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Measurement-only audit for the next three-asset validation phase.
+"""Measurement-only audit for the active XRP/LINK validation phase.
 
 This script does not alter strategy configuration or trading behavior. It
 performs a short public Derive websocket probe and reads a prior telemetry
@@ -388,7 +388,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="conf/mainnet_shadow.yml")
     parser.add_argument("--telemetry", required=True)
-    parser.add_argument("--state", default="logs/priority_reference_3asset/state.json")
+    parser.add_argument("--state", default="logs/xrp_link_mainnet_shadow/state.json")
     parser.add_argument("--mapping", default=None)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--probe-seconds", type=float, default=45.0)

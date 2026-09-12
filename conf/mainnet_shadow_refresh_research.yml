@@ -7,8 +7,9 @@ binance_connector: binance_perpetual
 multi_reference: false
 reference_selection_mode: PRIORITY_FAILOVER
 
-# Next research universe. DOGE and ADA are historical-only; the active phase
-# is limited to ZEC, XRP, and LINK. Bitget is disabled and never scheduled.
+# Current refresh-research universe. DOGE, ADA, and ZEC are historical-only;
+# the active phase is limited to XRP and LINK. Bitget is disabled and never
+# scheduled.
 bitget_enabled: false
 bitget_primary_enabled: false
 reference_venues: [binance, bybit, okx]
@@ -49,7 +50,7 @@ okx_instruments_url: https://www.okx.com/api/v5/public/instruments?instType=SWAP
 okx_websocket_url: wss://ws.okx.com:8443/ws/v5/public
 
 capital_usdc: 800
-max_active_assets: 3
+max_active_assets: 2
 order_size_multiplier: 1
 maker_fee_bps: 1
 fair_value_mid_weight: 0.5
@@ -100,9 +101,6 @@ defensive_spread_min_bps: 3
 fast_move_threshold_bps: 8
 
 assets:
-  ZEC:
-    enabled: true
-    order_size_multiplier: 1
   XRP:
     enabled: true
     order_size_multiplier: 1
@@ -110,6 +108,6 @@ assets:
     enabled: true
     order_size_multiplier: 1
 
-report_dir: reports/zec_xrp_link_refresh_research
-log_dir: logs/zec_xrp_link_refresh_research
-database_path: logs/zec_xrp_link_refresh_research/telemetry.sqlite
+report_dir: reports/xrp_link_refresh_research
+log_dir: logs/xrp_link_refresh_research
+database_path: logs/xrp_link_refresh_research/telemetry.sqlite

@@ -1,4 +1,8 @@
-# Multi-reference extension
+# Historical multi-reference extension
+
+This document describes the superseded eight-asset consensus phase. It is
+retained for reproducibility and comparison; new runs use the XRP/LINK-only
+priority profile documented in `docs/research/current_universe.md`.
 
 Goal: extend this project in place to compare Derive-only, Binance-only and
 four-venue consensus references across ADA, CC, XRP, SOL, LINK, DOGE, BNB, HYPE.

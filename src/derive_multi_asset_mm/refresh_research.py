@@ -1,4 +1,4 @@
-"""Offline refresh-deadband/residency research for ZEC, XRP, and LINK.
+"""Offline refresh-deadband/residency research for the active XRP/LINK scope.
 
 This module reads retained SQLite telemetry in read-only mode.  It replays one
 causal observation stream for every deadband/residency pair and writes only
@@ -1089,7 +1089,7 @@ def analyze_refresh_research(
         "analysis_end_utc": _iso(end),
         "duration_seconds": duration,
         "active_universe": assets,
-        "historical_assets_excluded_from_this_phase": ["DOGE", "ADA"],
+        "historical_assets_excluded_from_this_phase": ["DOGE", "ADA", "ZEC"],
         "reference_path": ["binance", "bybit", "okx", "pause"],
         "bitget_enabled": False,
         "derive_execution_only": True,
@@ -1124,14 +1124,14 @@ def analyze_refresh_research(
     }
     _write_json(out_dir / "final_refresh_research.json", final)
     md_lines = [
-        "# ZEC / XRP / LINK refresh-deadband research",
+        "# XRP / LINK refresh-deadband research",
         "",
         f"- Status: `{final['status']}`",
         f"- Classification: `{final['classification']}`",
         f"- Run status: `{run_status}`",
         f"- Analysis window: `{_iso(start)}` to `{_iso(end)}` ({duration:.3f}s observed)",
         f"- Active universe: `{', '.join(assets)}`",
-        "- Historical DOGE/ADA artifacts are preserved and excluded from this active phase.",
+        "- Historical DOGE/ADA/ZEC artifacts are preserved and excluded from this active phase.",
         "- Reference path: `Binance -> Bybit -> OKX -> Pause`; Bitget is disabled.",
         "- Execution: Derive-only shadow; `dry_run=true`, `mainnet_armed=false`, no live orders.",
         "",
@@ -1175,7 +1175,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--telemetry", required=True, action="append")
-    parser.add_argument("--out-dir", default="reports/zec_xrp_link_refresh_research")
+    parser.add_argument("--out-dir", default="reports/xrp_link_refresh_research")
     parser.add_argument("--state")
     parser.add_argument("--mapping")
     args = parser.parse_args(argv)

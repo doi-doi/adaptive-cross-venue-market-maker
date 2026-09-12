@@ -165,7 +165,7 @@ def start(config: RuntimeConfig, duration: float, foreground: bool, config_path:
         return 0
     report = asyncio.run(ShadowRunner(config).run(duration))
     print(
-        "THREE-ASSET PRIORITY-REFERENCE UPDATE COMPLETE"
+        "DERIVE MULTI-ASSET PRIORITY-REFERENCE SHADOW COMPLETE"
         if config.is_priority_failover
         else "DERIVE MULTI-ASSET MULTI-REFERENCE MM SHADOW COMPLETE"
     )

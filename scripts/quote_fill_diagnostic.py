@@ -23,7 +23,7 @@ def _display(value: object) -> str:
 def _print_console_summary(summary: dict) -> None:
     assets = summary.get("assets", [])
     storage = (summary.get("storage_health") or [{}])[0]
-    print("DERIVE THREE-ASSET QUOTE/FILL DIAGNOSTIC UPDATE COMPLETE")
+    print("DERIVE QUOTE/FILL DIAGNOSTIC UPDATE COMPLETE")
     print()
     print("ACTIVE ASSETS")
     for row in assets:

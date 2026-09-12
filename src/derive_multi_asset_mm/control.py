@@ -140,7 +140,7 @@ def control_contract() -> dict[str, str]:
         "MODEL_B": "BINANCE_ONLY_NO_FAILOVER",
         "MODEL_C": "PRIORITY_FAILOVER",
         "HISTORICAL_MODEL": "MULTI_SOURCE_CONSENSUS",
-        "reference_venues": "BINANCE, BYBIT, OKX, BITGET",
+        "reference_venues": "BINANCE, BYBIT, OKX",
         "portfolio_policy": "separate research portfolios; no second live portfolio",
         "timestamp_policy": "same causal snapshots and no forward fill",
     }

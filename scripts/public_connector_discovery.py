@@ -8,12 +8,11 @@ import asyncio
 import importlib
 import json
 
-ASSETS = ("ADA", "CC", "XRP", "SOL", "LINK", "DOGE", "BNB", "HYPE")
+ASSETS = ("XRP", "LINK")
 CLASSES = {
     "binance_perpetual": "BinancePerpetualDerivative",
     "bybit_perpetual": "BybitPerpetualDerivative",
     "okx_perpetual": "OkxPerpetualDerivative",
-    "bitget_perpetual": "BitgetPerpetualDerivative",
 }
 
 

@@ -1,4 +1,4 @@
-"""Reports for the three-asset strict-priority reference shadow run."""
+"""Reports for the strict-priority reference shadow run."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ PRIORITY_REPORT_FILES = (
 )
 
 _FRESH = {"HEALTHY", "DEGRADED"}
-_DISABLED_ASSETS = ("CC", "SOL", "LINK", "BNB", "HYPE")
+_DISABLED_ASSETS = ("DOGE", "ADA", "ZEC", "CC", "SOL", "BNB", "HYPE")
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -802,12 +802,13 @@ def finalize_priority_reports(
     )
     priority_runtime = (runtime_state.get("models") or {}).get("PRIORITY_FAILOVER:CONSERVATIVE", {})
     report = {
-        "report_version": "priority-reference-3asset-v1",
-        "strategy": "DERIVE MULTI-ASSET MULTI-VENUE-REFERENCE ADAPTIVE MM",
+        "report_version": "priority-reference-v2",
+        "strategy": "DERIVE MULTI-ASSET ADAPTIVE MM",
         "reference_selection_mode": config.reference_selection_mode,
         "active_assets": assets,
         "disabled_assets": list(_DISABLED_ASSETS),
         "reference_priority": list(config.reference_priority),
+        "bitget_enabled": config.bitget_enabled,
         "bitget_primary_enabled": config.bitget_primary_enabled,
         "run_metadata": run_metadata or {},
         "mappings": mappings,
@@ -862,14 +863,14 @@ def finalize_priority_reports(
 
     control_lookup = {row["model"]: row for row in model_rows}
     markdown = [
-        "# THREE-ASSET PRIORITY-REFERENCE UPDATE COMPLETE",
+        "# DERIVE MULTI-ASSET PRIORITY-REFERENCE SHADOW REPORT",
         "",
         "- Mode: `MAINNET_SHADOW`",
         "- Derive: `MAINNET` (sole execution venue)",
         "- Real orders: `0`",
         "- Real positions: `0`",
         "- Reference priority: `BINANCE -> BYBIT -> OKX -> PAUSE`",
-        "- Bitget primary: `DISABLED` (diagnostics only)",
+        "- Bitget: `DISABLED` (not scheduled)",
         "",
         "## Active assets",
         "",

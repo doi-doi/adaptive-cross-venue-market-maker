@@ -82,6 +82,7 @@ def test_shadow_engine_has_six_isolated_control_portfolios(tmp_path):
 def test_multi_reference_config_has_all_requested_venues_and_assets():
     config = RuntimeConfig.from_mapping({
         "multi_reference": True,
+        "bitget_enabled": True,
         "reference_venues": ["binance", "bybit", "okx", "bitget"],
         "minimum_reference_sources": 2,
         "assets": {asset: {} for asset in ("ADA", "CC", "XRP", "SOL", "LINK", "DOGE", "BNB", "HYPE")},
