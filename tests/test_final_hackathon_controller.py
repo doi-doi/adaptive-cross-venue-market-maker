@@ -129,6 +129,7 @@ class Row:
     def __init__(self, price, amount="100"):
         self.price = Decimal(price)
         self.amount = Decimal(amount)
+        self.update_id = 1
 
 
 class Book:
@@ -147,9 +148,11 @@ class Book:
 class Provider:
     def __init__(self):
         self.now = 100.0
+        derive_book = Book("0.5000", "0.5010")
         self.books = {
-            "derive_perpetual": Book("0.5000", "0.5010"),
-            "binance_perpetual": Book("0.4995", "0.5005"),
+            "derive_perpetual": derive_book,
+            "derive_perpetual_paper_trade": derive_book,
+            "binance_perpetual_paper_trade": Book("0.4995", "0.5005"),
         }
 
     def time(self):
@@ -196,7 +199,26 @@ def test_execution_and_reference_venues_are_immutable():
     with pytest.raises(ValueError, match="binance_perpetual"):
         config(reference_connector_name="bybit_perpetual")
     markets = config().update_markets(MarketDict())
-    assert markets.values == {"derive_perpetual": {"XRP-USDC"}, "binance_perpetual": {"XRP-USDT"}}
+    assert markets.values == {
+        "derive_perpetual_paper_trade": {"XRP-USDC"},
+        "binance_perpetual_paper_trade": {"XRP-USDT"},
+    }
+    assert config().reference_connector_name == "binance_perpetual"
+    assert config().reference_market_connector_name == "binance_perpetual_paper_trade"
+    assert config().execution_market_connector_name == "derive_perpetual_paper_trade"
+    assert config(shadow_mode=False).execution_market_connector_name == "derive_perpetual"
+
+
+def test_shadow_serialization_suppresses_live_account_initialization():
+    shadow = config()
+    live = config(shadow_mode=False)
+
+    assert shadow.position_mode == PositionMode.ONEWAY
+    assert shadow.leverage == 1
+    assert "position_mode" not in shadow.model_dump()
+    assert "leverage" not in shadow.model_dump()
+    assert live.model_dump()["position_mode"] == PositionMode.ONEWAY
+    assert live.model_dump()["leverage"] == 1
 
 
 def test_shadow_and_arming_are_separate_and_fail_closed():
@@ -229,10 +251,27 @@ def test_binance_and_derive_staleness_pause_independently():
     instance, provider = native_controller(binance_stale_seconds=1, derive_stale_seconds=1)
     asyncio.run(instance.update_processed_data())
     provider.now += 2
-    provider.books["binance_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
     asyncio.run(instance.update_processed_data())
     assert instance.processed_data["operational_state"] == "DERIVE_PAUSED"
     assert instance.processed_data["block_reason"] == "DERIVE_STALE"
+    assert instance.processed_data["derive_bbo"] == [Decimal("0.5000"), Decimal("0.5010")]
+    assert instance.processed_data["binance_bbo"] == [Decimal("0.4995"), Decimal("0.5005")]
+    assert instance.processed_data["derive_age_seconds"] == Decimal("2.0")
+    assert instance.processed_data["binance_age_seconds"] == Decimal("0.0")
+
+
+def test_paper_wrapper_bbo_change_resets_freshness_when_book_uid_is_static():
+    instance, provider = native_controller(binance_stale_seconds=1, derive_stale_seconds=1)
+    asyncio.run(instance.update_processed_data())
+    provider.now += 2
+    provider.books["derive_perpetual"].bid.price = Decimal("0.5001")
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+
+    asyncio.run(instance.update_processed_data())
+
+    assert instance.processed_data["operational_state"] == "SHADOW"
+    assert instance.processed_data["derive_age_seconds"] == Decimal("0.0")
 
 
 def test_binance_recovery_requires_continuous_healthy_period():
@@ -241,7 +280,7 @@ def test_binance_recovery_requires_continuous_healthy_period():
     assert instance.processed_data["block_reason"] == "BINANCE_RECOVERY"
     provider.now += 3
     provider.books["derive_perpetual"].last_diff_uid += 1
-    provider.books["binance_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
     asyncio.run(instance.update_processed_data())
     assert instance.processed_data["operational_state"] == "SHADOW"
 
@@ -310,7 +349,7 @@ def test_native_fill_markouts_are_unavailable_until_horizon_then_measured():
     assert instance.get_custom_info()["markout_30s_bps"] is None
     provider.now += 30
     provider.books["derive_perpetual"].last_diff_uid += 1
-    provider.books["binance_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
     provider.books["derive_perpetual"].bid.price = Decimal("0.51")
     provider.books["derive_perpetual"].ask.price = Decimal("0.511")
     asyncio.run(instance.update_processed_data())

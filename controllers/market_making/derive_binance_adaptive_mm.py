@@ -7,6 +7,8 @@ hard-wired to ``derive_perpetual``.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import statistics
 from collections import deque
@@ -25,6 +27,56 @@ from pydantic import Field, field_validator, model_validator
 ZERO = Decimal("0")
 ONE = Decimal("1")
 BPS = Decimal("10000")
+
+
+def _install_derive_snapshot_race_compatibility() -> bool:
+    """Patch only the known 2.16.0 snapshot-consumer race.
+
+    The affected connector's initializer and snapshot parser both consume the
+    same raw-message queue. Waiting for the parser-owned cache avoids stealing
+    its messages and keeps all data sourcing inside the native connector.
+    """
+    try:
+        from hummingbot.connector.derivative.derive_perpetual.derive_perpetual_api_order_book_data_source import (
+            DerivePerpetualAPIOrderBookDataSource,
+        )
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+    current = DerivePerpetualAPIOrderBookDataSource._request_order_book_snapshot
+    if getattr(current, "_adaptive_mm_snapshot_race_compatibility", False):
+        return True
+    try:
+        affected = "message_queue.get()" in inspect.getsource(current)
+    except (OSError, TypeError):
+        affected = False
+    if not affected:
+        return False
+
+    async def wait_for_parsed_snapshot(self, trading_pair: str) -> dict[str, Any]:
+        for _ in range(300):
+            cached = self._snapshot_messages.get(trading_pair)
+            if cached is not None:
+                return {
+                    "params": {
+                        "data": {
+                            "instrument_name": await self._connector.exchange_symbol_associated_to_pair(trading_pair),
+                            "publish_id": cached.update_id,
+                            "bids": cached.bids,
+                            "asks": cached.asks,
+                            "timestamp": cached.timestamp * 1000,
+                        }
+                    }
+                }
+            await asyncio.sleep(0.1)
+        raise RuntimeError(f"Timed out waiting for parsed Derive order book snapshot for {trading_pair}")
+
+    wait_for_parsed_snapshot._adaptive_mm_snapshot_race_compatibility = True
+    DerivePerpetualAPIOrderBookDataSource._request_order_book_snapshot = wait_for_parsed_snapshot
+    return True
+
+
+DERIVE_SNAPSHOT_RACE_COMPATIBILITY_ACTIVE = _install_derive_snapshot_race_compatibility()
 
 
 class MarketState(StrEnum):
@@ -255,11 +307,37 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
         return self
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
-        result = markets.add_or_update(self.connector_name, self.trading_pair)
+        result = markets.add_or_update(self.execution_market_connector_name, self.trading_pair)
         if result is not None:
             markets = result
-        result = markets.add_or_update(self.reference_connector_name, self.reference_trading_pair)
+        # This public-data wrapper uses the native Binance perpetual order-book
+        # tracker without requiring private Binance credentials.
+        result = markets.add_or_update(self.reference_market_connector_name, self.reference_trading_pair)
         return result if result is not None else markets
+
+    @property
+    def reference_market_connector_name(self) -> str:
+        return f"{self.reference_connector_name}_paper_trade"
+
+    @property
+    def execution_market_connector_name(self) -> str:
+        return f"{self.connector_name}_paper_trade" if self.shadow_mode else self.connector_name
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Keep V2's live-account initializer away from public shadow wrappers."""
+        data = super().model_dump(*args, **kwargs)
+        if self.shadow_mode:
+            # v2_with_controllers treats any connector name containing
+            # "perpetual" as a live derivative, then applies these fields to
+            # config.connector_name. In shadow mode that logical name is not a
+            # registered market: its public paper-trade wrapper is. Suppressing
+            # only these serialized fields avoids private account mutations and
+            # lets the controllers start; the typed values remain available on
+            # self for validation and executor construction. Live mode retains
+            # Hummingbot's standard position-mode and leverage initialization.
+            data.pop("position_mode", None)
+            data.pop("leverage", None)
+        return data
 
 
 class DeriveBinanceAdaptiveMM(ControllerBase):
@@ -301,6 +379,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         self._markout_30s: list[Decimal] = []
         self._markout_60s: list[Decimal] = []
         self._peak_pnl = ZERO
+        self._price_tick: Decimal | None = None
         self._started_at = self.market_data_provider.time()
         terms = (config.portfolio_capital_quote, config.reserve_quote)
         existing_terms = self._portfolio_terms.setdefault(config.portfolio_id, terms)
@@ -321,11 +400,24 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         bid_amount, ask_amount = Decimal(str(bids[0].amount)), Decimal(str(asks[0].amount))
         if bid <= ZERO or ask <= bid:
             raise ValueError("invalid_order_book")
-        uid = getattr(book, "last_diff_uid", None)
+        # PaperTradeExchange exposes a composite book whose top-level
+        # last_diff_uid can remain fixed while its native source rows update.
+        # Include row update IDs and observable BBO/size in the freshness
+        # signature so real source changes reset the gate without inventing a
+        # heartbeat or forward-filling a price.
+        signature = (
+            getattr(book, "last_diff_uid", None),
+            getattr(bids[0], "update_id", None),
+            getattr(asks[0], "update_id", None),
+            bid,
+            ask,
+            bid_amount,
+            ask_amount,
+        )
         key = f"{connector}:{pair}"
-        changed = uid is None or uid != self._book_uids.get(key)
+        changed = signature != self._book_uids.get(key)
         if changed:
-            self._book_uids[key] = uid
+            self._book_uids[key] = signature
             self._book_updated_at[key] = now
         updated_at = self._book_updated_at.setdefault(key, now)
         return bid, ask, bid_amount, ask_amount, Decimal(str(updated_at)), changed
@@ -335,12 +427,31 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         return (bid + ask) / Decimal("2")
 
     def _position_amount(self) -> Decimal:
-        connector = self.market_data_provider.get_connector(self.config.connector_name)
+        connector = self.market_data_provider.get_connector(self.config.execution_market_connector_name)
         total = ZERO
         for position in (getattr(connector, "account_positions", {}) or {}).values():
             if getattr(position, "trading_pair", "") == self.config.trading_pair:
                 total += Decimal(str(getattr(position, "amount", ZERO)))
         return total
+
+    async def _execution_rules_and_quantizer(self) -> tuple[Any, Any]:
+        """Return Derive's native rule and quantizer, including in shadow."""
+        market_name = self.config.execution_market_connector_name
+        if self.config.shadow_mode:
+            paper = self.market_data_provider.get_connector(market_name)
+            data_source = getattr(getattr(paper, "order_book_tracker", None), "data_source", None)
+            native_connector = getattr(data_source, "_connector", None)
+            if native_connector is not None:
+                rules = getattr(native_connector, "trading_rules", {})
+                if self.config.trading_pair not in rules:
+                    await native_connector._update_trading_rules()
+                    rules = native_connector.trading_rules
+                return rules[self.config.trading_pair], native_connector
+        # Test providers and live mode expose this through MarketDataProvider.
+        return (
+            self.market_data_provider.get_trading_rules(market_name, self.config.trading_pair),
+            self.market_data_provider,
+        )
 
     def _active(self) -> dict[str, Any]:
         result = {}
@@ -428,12 +539,27 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         now = self.market_data_provider.time()
         operational = OperationalState.SHADOW if self.config.shadow_mode else OperationalState.LIVE_DISARMED
         try:
-            dbid, dask, _, _, derive_updated, _ = self._read_book(self.config.connector_name, self.config.trading_pair, now)
+            dbid, dask, _, _, derive_updated, _ = self._read_book(
+                self.config.execution_market_connector_name, self.config.trading_pair, now
+            )
             bbid, bask, bsize, asize, binance_updated, reference_changed = self._read_book(
-                self.config.reference_connector_name, self.config.reference_trading_pair, now
+                self.config.reference_market_connector_name, self.config.reference_trading_pair, now
             )
             derive_age = Decimal(str(now)) - derive_updated
             binance_age = Decimal(str(now)) - binance_updated
+            # Preserve the last observed public BBO and measured ages even when
+            # a freshness gate pauses quoting. Operators still need the source
+            # evidence that explains a fail-closed state.
+            self.processed_data.update(
+                {
+                    "asset": self.config.asset,
+                    "derive_bbo": [dbid, dask],
+                    "derive_age_seconds": derive_age,
+                    "binance_bbo": [bbid, bask],
+                    "binance_age_seconds": binance_age,
+                    "updated_at": now,
+                }
+            )
             if derive_age > self.config.derive_stale_seconds:
                 operational = OperationalState.DERIVE_PAUSED
                 raise RuntimeError("DERIVE_STALE")
@@ -502,12 +628,19 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             reservation = fair * (ONE + (direction_skew - inventory_ratio * self.config.inventory_skew_bps) / BPS)
             raw_bid = min(dbid, reservation * (ONE - edge / BPS))
             raw_ask = max(dask, reservation * (ONE + edge / BPS))
-            trading_rules = self.market_data_provider.get_trading_rules(self.config.connector_name, self.config.trading_pair)
-            bid_price = self.market_data_provider.quantize_order_price(self.config.connector_name, self.config.trading_pair, raw_bid)
-            ask_price = self.market_data_provider.quantize_order_price(self.config.connector_name, self.config.trading_pair, raw_ask)
-            amount = self.market_data_provider.quantize_order_amount(
-                self.config.connector_name, self.config.trading_pair, self.config.order_amount_quote / derive_mid
-            )
+            execution_market = self.config.execution_market_connector_name
+            trading_rules, quantizer = await self._execution_rules_and_quantizer()
+            self._price_tick = Decimal(str(trading_rules.min_price_increment))
+            if quantizer is self.market_data_provider:
+                bid_price = quantizer.quantize_order_price(execution_market, self.config.trading_pair, raw_bid)
+                ask_price = quantizer.quantize_order_price(execution_market, self.config.trading_pair, raw_ask)
+                amount = quantizer.quantize_order_amount(
+                    execution_market, self.config.trading_pair, self.config.order_amount_quote / derive_mid
+                )
+            else:
+                bid_price = quantizer.quantize_order_price(self.config.trading_pair, raw_bid)
+                ask_price = quantizer.quantize_order_price(self.config.trading_pair, raw_ask)
+                amount = quantizer.quantize_order_amount(self.config.trading_pair, self.config.order_amount_quote / derive_mid)
             minimum_amount = Decimal(str(getattr(trading_rules, "min_order_size", ZERO) or ZERO))
             minimum_notional = max(
                 Decimal(str(getattr(trading_rules, "min_notional_size", ZERO) or ZERO)),
@@ -627,7 +760,9 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             "bid": (TradeType.BUY, self._plan.bid_price),
             "ask": (TradeType.SELL, self._plan.ask_price),
         }
-        tick = Decimal(str(self.market_data_provider.get_trading_rules(self.config.connector_name, self.config.trading_pair).min_price_increment))
+        if self._price_tick is None:
+            return []
+        tick = self._price_tick
         for level, (side, desired_price) in desired.items():
             current = active.get(level)
             if current is not None:

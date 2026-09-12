@@ -14,7 +14,7 @@ performed.
 | Actions | `CreateExecutorAction`, `StopExecutorAction` |
 | Executor | `OrderExecutorConfig` with `ExecutionStrategy.LIMIT_MAKER` |
 | Orchestration | native `ExecutorOrchestrator` through `v2_with_controllers.py` |
-| Connectors | `derive_perpetual` execution, `binance_perpetual` public reference |
+| Connectors | `derive_perpetual` execution; native `binance_perpetual` data through Hummingbot's `binance_perpetual_paper_trade` public wrapper |
 | Rate limits | native connector throttlers; controller adds only a quote-mutation budget |
 | Backtesting | V2 controller framework available; two-venue BBO behavior is only partially representable |
 | Condor checkout | `/Users/wilfred/Documents/Hummingbot/condor`, commit `11198d688a1c2082d5ed538f3e647fed3a405d8d` |
@@ -32,6 +32,24 @@ and pauses the side when its configured order cannot meet the native minimum.
 The local Hummingbot API and Condor checkouts were already dirty and behind
 their remotes. They were inspected read-only and not modified. The final work
 is isolated in this repository/worktree.
+
+The logical reference venue remains `binance_perpetual`. At runtime the
+controller registers `binance_perpetual_paper_trade`, Hummingbot's
+credentialless wrapper around the native Binance perpetual order-book tracker.
+This avoids a private Binance account while retaining native public BBO data.
+No executor is ever created for that wrapper.
+
+Shadow mode similarly registers `derive_perpetual_paper_trade` for Derive BBO
+and native trading rules, so validation cannot be blocked by or mutate account
+state. Switching `shadow_mode=false` changes that market back to the real
+`derive_perpetual` connector; executor configs are always hard-wired to the real
+connector and still require `mainnet_armed=true` before creation.
+
+Hummingbot 2.16.0 also contains a Derive startup race where the initial-book
+loader and parsed-snapshot listener consume the same raw queue. The controller
+installs a guarded compatibility shim only when that exact queue-consuming
+method is detected. It waits for the connector's own parsed snapshot cache; it
+does not replace Derive transport, authentication, trading rules, or execution.
 
 ## Deployment paths
 

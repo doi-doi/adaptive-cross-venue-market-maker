@@ -41,7 +41,7 @@ class _Provider:
         return 1000.0
 
     def get_order_book(self, connector: str, pair: str) -> _Book:
-        return _Book("0.499", "0.501") if connector == "derive_perpetual" else _Book("0.4995", "0.5005")
+        return _Book("0.499", "0.501") if connector.startswith("derive_perpetual") else _Book("0.4995", "0.5005")
 
     def get_trading_rules(self, connector: str, pair: str):
         return SimpleNamespace(
