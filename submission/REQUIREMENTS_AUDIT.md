@@ -6,9 +6,9 @@ yet demonstrated it. `PENDING` is not a pass.
 
 | # | Requirement | Status | Evidence / remaining gate |
 |---:|---|---|---|
-| 1 | Native XRP/LINK Hummingbot V2 bot | STATIC | controller plus two configs; native run pending |
+| 1 | Native XRP/LINK Hummingbot V2 bot | STATIC | controller plus two configs; native image contract passes; dual-controller run pending |
 | 2 | Permanent ownership architecture | PASS | `docs/ARCHITECTURE.md` |
-| 3 | Inspect actual Hummingbot and Condor | PARTIAL | paths/APIs/commits inspected; isolated native-image CI added; local package re-probe pending |
+| 3 | Inspect actual Hummingbot and Condor | PASS | local paths/APIs/commits inspected; official Hummingbot image contract passes in CI |
 | 4 | Reuse existing Derive connection | STATIC | `master_account` reference only; deployment pending |
 | 5 | XRP/LINK active, others disabled | PASS | competition configs contain only XRP/LINK |
 | 6 | One reusable controller class | PASS | one concrete controller/config class |
@@ -72,6 +72,6 @@ yet demonstrated it. `PENDING` is not a pass.
 
 ## Merge gate
 
-Do not merge until items 3, 4, 35, 37–39, 41–42, 48, 54, and 61 are proven
+Do not merge until items 4, 35, 37–39, 41–42, 48, 54, and 61 are proven
 through the installed Hummingbot/Condor runtime. Item 55 also needs the entrant
 to verify their external Botcamp application state.
