@@ -33,6 +33,6 @@ jobs:
           docker run --rm
           --volume "$GITHUB_WORKSPACE:/workspace:ro"
           --workdir /workspace
-          --entrypoint python
+          --entrypoint /opt/conda/envs/hummingbot/bin/python
           hummingbot/hummingbot:latest
           /workspace/scripts/controller_contract_probe.py
