@@ -1,0 +1,6 @@
+script_file_name: v2_with_controllers.py
+controllers_config:
+  - derive_binance_adaptive_mm_xrp.yml
+  - derive_binance_adaptive_mm_link.yml
+max_global_drawdown_quote: 40
+max_controller_drawdown_quote: 25

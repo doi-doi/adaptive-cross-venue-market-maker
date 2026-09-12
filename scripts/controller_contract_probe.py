@@ -9,11 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 _ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(_ROOT / "src"), str(_ROOT / "controllers")]
+sys.path[:0] = [str(_ROOT / "controllers")]
 
-from market_making.derive_multi_asset_binance_reference_mm import (  # noqa: E402
-    DeriveMultiAssetBinanceMMConfig,
-    DeriveMultiAssetBinanceMMController,
+from market_making.derive_binance_adaptive_mm import (  # noqa: E402
+    DeriveBinanceAdaptiveMM,
+    DeriveBinanceAdaptiveMMConfig,
 )
 
 
@@ -27,6 +27,7 @@ class _Book:
     def __init__(self, bid: str, ask: str) -> None:
         self._bid = _Row(bid, "10")
         self._ask = _Row(ask, "10")
+        self.last_diff_uid = 1
 
     def bid_entries(self):
         return iter([self._bid])
@@ -55,23 +56,29 @@ class _Provider:
     def get_connector(self, name: str):
         return SimpleNamespace(account_positions={})
 
+    def quantize_order_price(self, connector: str, pair: str, price: Decimal) -> Decimal:
+        return price.quantize(Decimal("0.1"))
+
+    def quantize_order_amount(self, connector: str, pair: str, amount: Decimal) -> Decimal:
+        return amount.quantize(Decimal("0.1"))
+
 
 async def main() -> None:
-    config = DeriveMultiAssetBinanceMMConfig(
+    config = DeriveBinanceAdaptiveMMConfig(
         id="contract_probe",
-        controller_name="derive_multi_asset_binance_reference_mm",
-        assets=["XRP", "LINK"],
-        max_active_assets=3,
+        asset="XRP",
+        trading_pair="XRP-USDC",
+        reference_trading_pair="XRP-USDT",
+        binance_recovery_seconds=0,
     )
-    controller = DeriveMultiAssetBinanceMMController(config, _Provider(), asyncio.Queue())
+    controller = DeriveBinanceAdaptiveMM(config, _Provider(), asyncio.Queue())
     await controller.update_processed_data()
     actions = controller.determine_executor_actions()
     if actions:
         raise AssertionError(f"shadow contract emitted actions: {actions}")
-    controls = {row.get("reference_control") for row in controller.processed_data.values()}
-    if controls != {"PRIORITY_FAILOVER"}:
-        raise AssertionError(f"priority control not active: {controls}")
-    print(f"mode={config.mode} assets={sorted(controller.processed_data)} priority={config.reference_priority} actions={len(actions)}")
+    if controller.processed_data.get("mm_mode") == "PAUSED":
+        raise AssertionError(f"controller did not calculate quotes: {controller.processed_data}")
+    print(f"shadow={config.shadow_mode} asset={config.asset} reference={config.reference_connector_name} actions={len(actions)}")
     print(controller.to_format_status()[0])
 
 
