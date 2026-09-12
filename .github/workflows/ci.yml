@@ -32,6 +32,7 @@ jobs:
         run: >-
           docker run --rm
           --volume "$GITHUB_WORKSPACE:/workspace:ro"
+          --env PYTHONPATH=/home/hummingbot
           --workdir /workspace
           --entrypoint /opt/conda/envs/hummingbot/bin/python
           hummingbot/hummingbot:latest
