@@ -41,12 +41,12 @@ class _Provider:
         return 1000.0
 
     def get_order_book(self, connector: str, pair: str) -> _Book:
-        return _Book("100", "101") if connector == "derive_perpetual" else _Book("100.2", "100.8")
+        return _Book("0.499", "0.501") if connector == "derive_perpetual" else _Book("0.4995", "0.5005")
 
     def get_trading_rules(self, connector: str, pair: str):
         return SimpleNamespace(
-            min_price_increment=Decimal("0.1"),
-            min_base_amount_increment=Decimal("0.1"),
+            min_price_increment=Decimal("0.0001"),
+            min_base_amount_increment=Decimal("1"),
             min_order_size=Decimal("1"),
             max_order_size=Decimal("100"),
             min_notional_size=Decimal("0"),
@@ -57,10 +57,10 @@ class _Provider:
         return SimpleNamespace(account_positions={})
 
     def quantize_order_price(self, connector: str, pair: str, price: Decimal) -> Decimal:
-        return price.quantize(Decimal("0.1"))
+        return price.quantize(Decimal("0.0001"))
 
     def quantize_order_amount(self, connector: str, pair: str, amount: Decimal) -> Decimal:
-        return amount.quantize(Decimal("0.1"))
+        return amount.quantize(Decimal("1"))
 
 
 async def main() -> None:
