@@ -22,7 +22,7 @@ Current rules: https://www.botcamp.xyz/hackathons/agent-builders-cup-1
 | Exact application submitted | NOT VERIFIED | External entrant/application state was not inspected |
 | 48-hour live final readiness | NOT VERIFIED | No live trading or long validation authorized/performed |
 | Current local native import | PASS | official image loaded controller and both native public feeds |
-| 15–30 minute shadow validation | IN PROGRESS | final evidence is recorded in `submission/FINAL_STATUS.md` |
+| 15–30 minute shadow validation | PASS | 16m53s wall-clock run; final controller uptime 961.48s; evidence in `submission/SHADOW_VALIDATION_20260912.md` |
 
 No PASS above is a profitability, exchange-fill, or competition-selection
 claim.
