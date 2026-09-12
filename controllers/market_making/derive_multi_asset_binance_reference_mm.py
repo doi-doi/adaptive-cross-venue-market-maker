@@ -18,13 +18,26 @@ from hummingbot.strategy_v2.executors.order_executor.data_types import Execution
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction, StopExecutorAction
 from pydantic import Field, field_validator, model_validator
 
+from derive_multi_asset_mm.control import build_control_fair_value
 from derive_multi_asset_mm.inventory import classify_inventory
+from derive_multi_asset_mm.lifecycle import quote_is_outside_mid_threshold
 from derive_multi_asset_mm.market_state import MarketStateEngine
-from derive_multi_asset_mm.models import BPS, ZERO, AssetSpec, BookSnapshot, DeriveRules, QuotePlacement, Side
+from derive_multi_asset_mm.models import (
+    BPS,
+    ZERO,
+    AssetSpec,
+    BookSnapshot,
+    DeriveRules,
+    QuotePlacement,
+    ReferenceControl,
+    Side,
+)
 from derive_multi_asset_mm.portfolio import portfolio_skew_bps
+from derive_multi_asset_mm.priority import PriorityReferenceSelector
 from derive_multi_asset_mm.quote_engine import QuoteInputs, build_quote_plan
-from derive_multi_asset_mm.reference import RobustBasis, build_fair_value
+from derive_multi_asset_mm.reference import RobustBasis, aggregate_reference_book
 from derive_multi_asset_mm.risk import ActionRateWindow, validate_rounded_order
+from derive_multi_asset_mm.source_health import SourceHealth
 
 
 class DeriveMultiAssetBinanceMMConfig(ControllerConfigBase):
@@ -35,9 +48,19 @@ class DeriveMultiAssetBinanceMMConfig(ControllerConfigBase):
     mainnet_armed: bool = Field(default=False)
     derive_connector: str = Field(default="derive_perpetual")
     binance_connector: str = Field(default="binance_perpetual")
-    assets: list[str] = Field(default_factory=lambda: ["ADA", "CC", "XRP", "SOL"])
+    reference_connectors: list[str] = Field(default_factory=lambda: ["binance_perpetual", "bybit_perpetual", "okx_perpetual", "bitget_perpetual"])
+    multi_reference: bool = Field(default=False)
+    reference_selection_mode: str = Field(default="PRIORITY_FAILOVER")
+    reference_priority: list[str] = Field(default_factory=lambda: ["binance", "bybit", "okx"])
+    bitget_primary_enabled: bool = Field(default=False)
+    recovery_min_healthy_seconds: float = Field(default=3.0, gt=0)
+    reference_healthy_seconds: Decimal = Field(default=Decimal("2"), gt=0)
+    minimum_reference_sources: int = Field(default=1, ge=1, le=4)
+    reference_outlier_bps: Decimal = Field(default=Decimal("50"), gt=0)
+    reference_disagreement_pause_bps: Decimal = Field(default=Decimal("25"), gt=0)
+    assets: list[str] = Field(default_factory=lambda: ["DOGE", "ADA", "XRP"])
     capital_usdc: Decimal = Field(default=Decimal("800"), gt=0)
-    max_active_assets: int = Field(default=4, ge=1)
+    max_active_assets: int = Field(default=3, ge=1)
     order_size_multiplier: Decimal = Field(default=Decimal("1"), gt=0)
     maker_fee_bps: Decimal = Field(default=Decimal("1"), ge=0)
     fair_value_mid_weight: Decimal = Field(default=Decimal("0.5"), ge=0)
@@ -54,7 +77,7 @@ class DeriveMultiAssetBinanceMMConfig(ControllerConfigBase):
     portfolio_skew_max_bps: Decimal = Field(default=Decimal("4"), ge=0)
     bbo_stale_seconds: Decimal = Field(default=Decimal("5"), gt=0)
     reference_stale_seconds: Decimal = Field(default=Decimal("5"), gt=0)
-    refresh_tolerance_bps: Decimal = Field(default=Decimal("3"), gt=0)
+    refresh_tolerance_bps: Decimal = Field(default=Decimal("200"), gt=0)
     quote_max_age_seconds: Decimal = Field(default=Decimal("30"), gt=0)
     max_single_order_notional: Decimal = Field(default=Decimal("120"), gt=0)
     max_open_order_notional: Decimal = Field(default=Decimal("400"), gt=0)
@@ -89,6 +112,19 @@ class DeriveMultiAssetBinanceMMConfig(ControllerConfigBase):
             raise ValueError("MAINNET_LIVE requires dry_run=false and mainnet_armed=true")
         if len(self.assets) == 0 or self.max_active_assets > len(self.assets):
             raise ValueError("assets must be non-empty and cover max_active_assets")
+        if len(set(self.reference_connectors)) != len(self.reference_connectors):
+            raise ValueError("reference_connectors cannot contain duplicates")
+        selection_mode = self.reference_selection_mode.strip().upper()
+        if selection_mode not in {"LEGACY", "PRIORITY_FAILOVER"}:
+            raise ValueError("reference_selection_mode must be LEGACY or PRIORITY_FAILOVER")
+        priority = tuple(str(venue).strip().lower() for venue in self.reference_priority)
+        configured = {connector.removesuffix("_perpetual") for connector in self.reference_connectors}
+        if not priority or len(set(priority)) != len(priority) or any(venue not in configured for venue in priority):
+            raise ValueError("reference_priority must contain unique configured venues")
+        if selection_mode == "PRIORITY_FAILOVER" and priority != ("binance", "bybit", "okx"):
+            raise ValueError("PRIORITY_FAILOVER requires reference_priority binance, bybit, okx")
+        if selection_mode == "PRIORITY_FAILOVER" and self.bitget_primary_enabled:
+            raise ValueError("Bitget cannot be enabled as the primary reference")
         if self.fair_value_mid_weight + self.fair_value_microprice_weight <= ZERO:
             raise ValueError("fair value weights must sum to a positive value")
         if self.max_open_order_notional < self.max_single_order_notional:
@@ -101,9 +137,10 @@ class DeriveMultiAssetBinanceMMConfig(ControllerConfigBase):
             result = markets.add_or_update(self.derive_connector, f"{symbol}-USDC")
             if result is not None:
                 markets = result
-            result = markets.add_or_update(self.binance_connector, f"{symbol}-USDT")
-            if result is not None:
-                markets = result
+            for connector in self.reference_connectors:
+                result = markets.add_or_update(connector, f"{symbol}-USDT")
+                if result is not None:
+                    markets = result
         return markets
 
 
@@ -124,9 +161,22 @@ class DeriveMultiAssetBinanceMMController(ControllerBase):
         self._assets = tuple(str(asset).strip().upper() for asset in config.assets)
         self._basis = {asset: RobustBasis(config.basis_window, config.basis_max_deviation_bps) for asset in self._assets}
         self._states = {asset: MarketStateEngine() for asset in self._assets}
+        self._reference_books: dict[str, dict[str, BookSnapshot]] = {}
+        self._reference_health: dict[str, dict[str, SourceHealth]] = {
+            asset: {connector.removesuffix("_perpetual"): SourceHealth() for connector in config.reference_connectors}
+            for asset in self._assets
+        }
         self._plans: dict[str, Any] = {}
         self._books: dict[str, BookSnapshot] = {}
         self._last_processed: dict[str, float] = {}
+        self._priority_selector = (
+            PriorityReferenceSelector(
+                priority=tuple(str(venue).strip().lower() for venue in config.reference_priority),
+                recovery_min_healthy_seconds=config.recovery_min_healthy_seconds,
+            )
+            if config.reference_selection_mode.strip().upper() == "PRIORITY_FAILOVER"
+            else None
+        )
         self._pending_stop_ids: set[str] = set()
         self._actions = ActionRateWindow(60)
         self.processed_data = {}
@@ -196,31 +246,81 @@ class DeriveMultiAssetBinanceMMController(ControllerBase):
 
     async def update_processed_data(self):
         now = self.market_data_provider.time()
-        snapshots: dict[str, tuple[BookSnapshot, BookSnapshot, DeriveRules]] = {}
+        snapshots: dict[str, tuple[BookSnapshot, dict[str, BookSnapshot], DeriveRules]] = {}
         inventories = {}
         for asset in self._assets:
             try:
                 derive_book = self._book(self.config.derive_connector, self._derive_pair(asset), now)
-                binance_book = self._book(self.config.binance_connector, self._binance_pair(asset), now)
+                reference_books: dict[str, BookSnapshot] = {}
+                for connector in self.config.reference_connectors:
+                    venue = connector.removesuffix("_perpetual")
+                    try:
+                        book = self._book(connector, self._binance_pair(asset), now)
+                    except Exception:
+                        continue
+                    health = self._reference_health[asset][venue]
+                    if not health.connected:
+                        health.connect(now)
+                    if health.accept(book):
+                        reference_books[venue] = book
                 rules = self._rules(asset)
-                snapshots[asset] = (derive_book, binance_book, rules)
+                snapshots[asset] = (derive_book, reference_books, rules)
                 inventories[asset] = classify_inventory(self._position(asset, derive_book.mid), derive_book.mid, self.config.max_inventory_per_asset)
             except Exception as exc:
                 self.processed_data[asset] = {"asset": asset, "data_health": "REFERENCE_UNAVAILABLE", "block_reason": type(exc).__name__}
         portfolio_shift = portfolio_skew_bps(inventories, self.config.max_portfolio_inventory, self.config.portfolio_skew_max_bps)
-        for asset, (derive_book, binance_book, rules) in snapshots.items():
-            fair = build_fair_value(
-                derive_book,
-                binance_book,
-                self._basis[asset],
+        for asset, (derive_book, reference_books, rules) in snapshots.items():
+            health = self._reference_health[asset]
+            priority_selection = (
+                self._priority_selector.select(
+                    asset,
+                    books=reference_books,
+                    health=health,
+                    now=now,
+                    healthy_seconds=float(self.config.reference_healthy_seconds),
+                    stale_seconds=float(self.config.reference_stale_seconds),
+                    stale_overrides={},
+                    mid_weight=self.config.fair_value_mid_weight,
+                    microprice_weight=self.config.fair_value_microprice_weight,
+                    max_levels=self.config.max_book_levels,
+                )
+                if self._priority_selector is not None
+                else None
+            )
+            control = (
+                ReferenceControl.PRIORITY_FAILOVER.value
+                if priority_selection is not None
+                else ReferenceControl.MULTI_SOURCE_CONSENSUS.value
+                if self.config.multi_reference
+                else ReferenceControl.BINANCE_ONLY_NO_FAILOVER.value
+            )
+            fair, reference_result = build_control_fair_value(
+                control,
+                derive_book=derive_book,
+                source_books=reference_books,
+                source_health=health,
+                basis_tracker=self._basis[asset],
+                now=now,
+                healthy_seconds=float(self.config.reference_healthy_seconds),
+                stale_seconds=float(self.config.reference_stale_seconds),
+                stale_overrides={},
+                outlier_bps=self.config.reference_outlier_bps,
+                disagreement_bps=self.config.reference_disagreement_pause_bps,
+                minimum_sources=self.config.minimum_reference_sources,
                 mid_weight=self.config.fair_value_mid_weight,
                 microprice_weight=self.config.fair_value_microprice_weight,
                 max_levels=self.config.max_book_levels,
+                priority_selection=priority_selection,
             )
-            protected = abs(fair.basis_bps - fair.baseline_basis_bps) > self.config.basis_max_deviation_bps
+            reference_book = (
+                priority_selection.selected_book
+                if priority_selection is not None and priority_selection.selected_book is not None
+                else aggregate_reference_book(reference_books) or derive_book
+            )
+            protected = fair is None or bool(reference_result.get("pause_reason")) or abs(fair.basis_bps - fair.baseline_basis_bps) > self.config.basis_max_deviation_bps
             state = self._states[asset].update(
                 derive_book=derive_book,
-                binance_book=binance_book,
+                binance_book=reference_book,
                 now=now,
                 bbo_stale_seconds=self.config.bbo_stale_seconds,
                 reference_stale_seconds=self.config.reference_stale_seconds,
@@ -251,10 +351,24 @@ class DeriveMultiAssetBinanceMMController(ControllerBase):
                 "derive_bid": derive_book.best_bid,
                 "derive_ask": derive_book.best_ask,
                 "derive_spread_bps": derive_book.spread / derive_book.mid * BPS,
-                "binance_mid": fair.binance_mid,
-                "binance_microprice": fair.binance_microprice,
-                "fair_value": fair.derive_fair_value,
-                "basis_bps": fair.basis_bps,
+                "binance_mid": fair.binance_mid if fair else None,
+                "binance_microprice": fair.binance_microprice if fair else None,
+                "fair_value": fair.derive_fair_value if fair else None,
+                "basis_bps": fair.basis_bps if fair else None,
+                "reference_control": control,
+                "reference_selection_mode": self.config.reference_selection_mode,
+                "reference_priority": self.config.reference_priority,
+                "selected_reference": reference_result.get("selected_reference"),
+                "priority_event": reference_result.get("priority_event", ""),
+                "failover_event": reference_result.get("failover_event", ""),
+                "recovery_event": reference_result.get("recovery_event", ""),
+                "recovery_ready": reference_result.get("recovery_ready", False),
+                "time_using": reference_result.get("time_using", {}),
+                "time_paused": reference_result.get("time_paused", ZERO),
+                "reference_fair_value": fair.fair_value_raw if fair else None,
+                "reference_sources": reference_result.get("valid_sources", []),
+                "reference_dispersion_bps": reference_result.get("dispersion_bps"),
+                "reference_pause_reason": reference_result.get("pause_reason", ""),
                 "buy_edge_bps": plan.buy_edge_bps,
                 "sell_edge_bps": plan.sell_edge_bps,
                 "market_mode": state.market_mode.value,
@@ -263,7 +377,11 @@ class DeriveMultiAssetBinanceMMController(ControllerBase):
                 "position": inventories[asset].amount,
                 "bid_order": f"{plan.bid_amount}@{plan.bid_price}" if plan.bid_price else "NONE",
                 "ask_order": f"{plan.ask_amount}@{plan.ask_price}" if plan.ask_price else "NONE",
-                "data_health": "HEALTHY",
+                "data_health": (
+                    reference_result.get("source_health", {}).get(reference_result.get("selected_reference"), {}).get("health", "")
+                    if fair and reference_result.get("selected_reference")
+                    else reference_result.get("pause_reason", "REFERENCE_UNAVAILABLE")
+                ),
                 "block_reason": plan.block_reason,
             }
         self._last_update = now
@@ -291,9 +409,13 @@ class DeriveMultiAssetBinanceMMController(ControllerBase):
             desired_price = plan.bid_price if side_name == "bid" and plan else plan.ask_price if side_name == "ask" and plan else None
             desired_amount = plan.bid_amount if side_name == "bid" and plan else plan.ask_amount if side_name == "ask" and plan else ZERO
             old_price = Decimal(str(getattr(getattr(executor, "config", None), "price", ZERO)))
-            age = Decimal(str(max(0.0, now - float(getattr(executor, "timestamp", now)))))
-            movement = abs(desired_price - old_price) / old_price * BPS if desired_price and old_price > ZERO else Decimal("999")
-            if desired_price is None or desired_amount <= ZERO or age >= self.config.quote_max_age_seconds or movement >= self.config.refresh_tolerance_bps:
+            derive_book = self._books.get(asset)
+            outside_mid = quote_is_outside_mid_threshold(
+                old_price,
+                derive_book.mid if derive_book is not None else None,
+                self.config.refresh_tolerance_bps,
+            )
+            if desired_price is None or desired_amount <= ZERO or outside_mid:
                 if executor.id not in self._pending_stop_ids and self._actions.allowed(now, self.config.max_actions_per_minute):
                     self._pending_stop_ids.add(executor.id)
                     stop_levels.add(level_id)
@@ -332,7 +454,7 @@ class DeriveMultiAssetBinanceMMController(ControllerBase):
             row = self.processed_data.get(asset, {})
             lines.append(
                 f"{asset} derive={row.get('derive_bid', '—')}/{row.get('derive_ask', '—')} "
-                f"binance={row.get('binance_mid', '—')} fair={row.get('fair_value', '—')} "
+                f"references={row.get('reference_sources', '—')} fair={row.get('fair_value', '—')} "
                 f"basis={row.get('basis_bps', '—')} edge={row.get('buy_edge_bps', '—')}/{row.get('sell_edge_bps', '—')} "
                 f"state={row.get('market_mode', '—')}/{row.get('direction', '—')}/{row.get('inventory_mode', '—')} "
                 f"position={row.get('position', '—')} health={row.get('data_health', '—')}"

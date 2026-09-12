@@ -34,6 +34,13 @@ def test_basis_tracker_rejects_extreme_observation_from_baseline():
     assert deviation == Decimal("98")
 
 
+def test_basis_tracker_maintains_causal_ewma_diagnostic():
+    tracker = RobustBasis(window=5, max_deviation_bps=Decimal("10"), ewma_alpha=Decimal("0.5"))
+    tracker.update(Decimal("2"))
+    tracker.update(Decimal("6"))
+    assert tracker.ewma_bps == Decimal("4")
+
+
 def test_fair_value_uses_binance_reference_and_baseline_basis():
     tracker = RobustBasis(window=5, max_deviation_bps=Decimal("20"))
     fair = build_fair_value(

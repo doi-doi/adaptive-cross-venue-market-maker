@@ -1,0 +1,96 @@
+mode: MAINNET_SHADOW
+dry_run: true
+mainnet_armed: false
+
+derive_connector: derive_perpetual
+binance_connector: binance_perpetual
+multi_reference: false
+reference_selection_mode: PRIORITY_FAILOVER
+
+# Two-asset replacement profile: DOGE and ADA are excluded from this run.
+# Bitget remains excluded because its public feed was intermittent.
+bitget_enabled: false
+bitget_primary_enabled: false
+reference_venues: [binance, bybit, okx]
+reference_priority: [binance, bybit, okx]
+recovery_min_healthy_seconds: 3
+reference_healthy_seconds: 2
+reference_stale_seconds: 5
+reference_stale_overrides:
+  binance: 5
+  bybit: 5
+  okx: 5
+reference_outlier_bps: 50
+reference_disagreement_pause_bps: 25
+minimum_reference_sources: 1
+derive_public_url: https://api.lyra.finance
+derive_websocket_url: wss://api.lyra.finance/ws
+derive_trade_history_poll_seconds: 15
+
+# Persistence-only governor. These settings never alter strategy cadence.
+storage_warning_free_gb: 15
+storage_critical_free_gb: 10
+storage_emergency_free_gb: 5
+raw_retention_seconds: 180
+feature_persist_interval_seconds: 1
+aggregate_interval_seconds: 60
+chunk_rotation_minutes: 10
+governor_check_interval_seconds: 5
+warning_run_storage_gb: 2
+critical_run_storage_gb: 2.5
+max_run_storage_gb: 3
+max_project_generated_data_gb: 10
+
+binance_exchange_info_url: https://fapi.binance.com/fapi/v1/exchangeInfo
+binance_websocket_url: wss://fstream.binance.com/stream
+bybit_instruments_url: https://api.bybit.com/v5/market/instruments-info?category=linear
+bybit_websocket_url: wss://stream.bybit.com/v5/public/linear
+okx_instruments_url: https://www.okx.com/api/v5/public/instruments?instType=SWAP
+okx_websocket_url: wss://ws.okx.com:8443/ws/v5/public
+
+capital_usdc: 800
+max_active_assets: 2
+order_size_multiplier: 1
+maker_fee_bps: 1
+fair_value_mid_weight: 0.5
+fair_value_microprice_weight: 0.5
+basis_window: 120
+basis_ewma_alpha: 0.2
+basis_max_deviation_bps: 50
+min_edge_bps: 4
+volatility_buffer: 2
+latency_buffer: 1
+toxicity_buffer: 1
+minimum_profit_buffer: 1
+directional_skew_max_bps: 2
+inventory_skew_max_bps: 12
+portfolio_skew_max_bps: 4
+bbo_stale_seconds: 5
+refresh_tolerance_bps: 3
+quote_max_age_seconds: 30
+max_single_order_notional: 120
+max_open_order_notional: 400
+max_inventory_per_asset: 200
+max_portfolio_inventory: 400
+max_drawdown: 40
+max_actions_per_minute: 30
+quote_placement: AT_TOUCH
+max_book_levels: 5
+direction_threshold_bps: 1
+high_vol_threshold_bps: 8
+extreme_vol_threshold_bps: 20
+aggressive_spread_max_bps: 15
+defensive_spread_min_bps: 3
+fast_move_threshold_bps: 8
+
+assets:
+  XRP:
+    enabled: true
+    order_size_multiplier: 1
+  LINK:
+    enabled: true
+    order_size_multiplier: 1
+
+report_dir: reports/priority_reference_3asset_6h
+log_dir: logs/priority_reference_3asset_6h
+database_path: logs/priority_reference_3asset_6h/telemetry.sqlite

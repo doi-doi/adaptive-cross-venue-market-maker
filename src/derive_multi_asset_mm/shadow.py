@@ -11,11 +11,13 @@ import asyncio
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
 from .config import RuntimeConfig
-from .models import AssetMapping, DeriveRules
+from .models import AssetMapping, DeriveRules, ReferenceMarket
+from .priority_reporting import finalize_priority_reports
 from .reporting import finalize_reports
 from .runner import ShadowRunner
 from .telemetry import TelemetryStore
@@ -35,16 +37,59 @@ def parse_duration(value: str) -> float:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Derive multi-asset Binance-reference mainnet shadow")
+    parser = argparse.ArgumentParser(description="Derive multi-asset multi-reference mainnet shadow")
     parser.add_argument("command", choices=("start", "status", "audit", "finalize"))
     parser.add_argument("--config", default="conf/mainnet_shadow.yml")
     parser.add_argument("--duration", default="30m")
+    parser.add_argument("--run-id", default=None, help="isolate this run below the configured report/log directories")
     parser.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
 def _state_path(config: RuntimeConfig) -> Path:
     return config.log_dir / "state.json"
+
+
+def _scoped_config(config: RuntimeConfig, run_id: str | None) -> RuntimeConfig:
+    """Use an isolated child directory for validation runs and longer captures."""
+
+    if not run_id:
+        return config
+    value = str(run_id).strip()
+    path = Path(value)
+    if not value or value in {".", ".."} or path.is_absolute() or len(path.parts) != 1:
+        raise ValueError("run_id must be a single relative directory name")
+    return replace(
+        config,
+        report_dir=config.report_dir / value,
+        log_dir=config.log_dir / value,
+        database_path=config.database_path.parent / value / config.database_path.name,
+    )
+
+
+def _finalize_for_config(
+    *,
+    config: RuntimeConfig,
+    mappings: dict[str, AssetMapping],
+    mapping_report: dict,
+    telemetry: TelemetryStore,
+    run_metadata: dict | None = None,
+) -> dict:
+    if config.is_priority_failover:
+        return finalize_priority_reports(
+            config=config,
+            mappings=mappings,
+            mapping_report=mapping_report,
+            telemetry=telemetry,
+            run_metadata=run_metadata,
+        )
+    return finalize_reports(
+        config=config,
+        mappings=mappings,
+        mapping_report=mapping_report,
+        telemetry=telemetry,
+        run_metadata=run_metadata,
+    )
 
 
 def _load_mapping_report(path: Path) -> tuple[dict[str, AssetMapping], dict]:
@@ -79,24 +124,51 @@ def _load_mapping_report(path: Path) -> tuple[dict[str, AssetMapping], dict]:
             valid=bool(value.get("valid", False)),
             reason=value.get("reason", "UNVALIDATED"),
             rules=rules,
+            reference_markets=tuple(
+                ReferenceMarket(
+                    asset=str(item.get("asset", asset)),
+                    venue=str(item.get("venue", "")),
+                    connector=str(item.get("connector", "")),
+                    symbol=item.get("symbol"),
+                    status=str(item.get("status", "REFERENCE_UNAVAILABLE")),
+                    reason=str(item.get("reason", "")),
+                    contract_type=str(item.get("contract_type", "perpetual")),
+                    underlying=item.get("underlying"),
+                    quote=str(item.get("quote", "USDT")),
+                    amount_multiplier=Decimal(str(item.get("amount_multiplier", "1"))),
+                    tick_size=(Decimal(str(item["tick_size"])) if item.get("tick_size") not in (None, "") else None),
+                    amount_step=(Decimal(str(item["amount_step"])) if item.get("amount_step") not in (None, "") else None),
+                    minimum_amount=(Decimal(str(item["minimum_amount"])) if item.get("minimum_amount") not in (None, "") else None),
+                    minimum_notional=(Decimal(str(item["minimum_notional"])) if item.get("minimum_notional") not in (None, "") else None),
+                )
+                for item in (value.get("reference_markets", []) if isinstance(value, dict) else [])
+                if isinstance(item, dict)
+            ),
         )
     return mappings, raw
 
 
-def start(config: RuntimeConfig, duration: float, foreground: bool, config_path: str | Path) -> int:
+def start(config: RuntimeConfig, duration: float, foreground: bool, config_path: str | Path, run_id: str | None) -> int:
     if not foreground:
         config.log_dir.mkdir(parents=True, exist_ok=True)
         stdout_path = config.log_dir / "runner.stdout.log"
         stderr_path = config.log_dir / "runner.stderr.log"
         command = [sys.executable, "-m", "derive_multi_asset_mm.shadow", "start", "--foreground", "--config", str(config_path), "--duration", str(duration)]
+        if run_id:
+            command.extend(["--run-id", run_id])
         with stdout_path.open("a", encoding="utf-8") as stdout, stderr_path.open("a", encoding="utf-8") as stderr:
             process = subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
         (config.log_dir / "runner.pid").write_text(str(process.pid), encoding="utf-8")
         print(f"MAINNET SHADOW STARTED pid={process.pid} duration_seconds={duration}")
         print(f"STATE: {config.log_dir / 'state.json'}")
+        print(f"REPORTS: {config.report_dir}")
         return 0
     report = asyncio.run(ShadowRunner(config).run(duration))
-    print("DERIVE MULTI-ASSET BINANCE-REFERENCE MM BUILD COMPLETE")
+    print(
+        "THREE-ASSET PRIORITY-REFERENCE UPDATE COMPLETE"
+        if config.is_priority_failover
+        else "DERIVE MULTI-ASSET MULTI-REFERENCE MM SHADOW COMPLETE"
+    )
     print(json.dumps({"status": report.get("run_metadata", {}).get("status"), "classification": report.get("classification"), "real_orders": 0, "real_positions": 0}, indent=2))
     return 0
 
@@ -104,13 +176,13 @@ def start(config: RuntimeConfig, duration: float, foreground: bool, config_path:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "status":
-        config = RuntimeConfig.from_yaml(args.config)
+        config = _scoped_config(RuntimeConfig.from_yaml(args.config), args.run_id)
         state_path = _state_path(config)
         print(state_path.read_text(encoding="utf-8") if state_path.exists() else "NO_SHADOW_STATE")
         return 0
-    config = RuntimeConfig.from_yaml(args.config)
+    config = _scoped_config(RuntimeConfig.from_yaml(args.config), args.run_id)
     if args.command == "start":
-        return start(config, parse_duration(args.duration), args.foreground, args.config)
+        return start(config, parse_duration(args.duration), args.foreground, args.config, args.run_id)
     if args.command == "audit":
         state_path = _state_path(config)
         if not state_path.exists():
@@ -126,6 +198,10 @@ def main(argv: list[str] | None = None) -> int:
             violations.append("real_orders_nonzero")
         if state.get("real_positions") != 0:
             violations.append("real_positions_nonzero")
+        if state.get("reference_execution") is not False:
+            violations.append("reference_execution_not_false")
+        if state.get("credentials_loaded") is not False:
+            violations.append("credentials_loaded")
         print(json.dumps({"passed": not violations, "violations": violations, "state": state}, indent=2))
         return 0 if not violations else 1
     if args.command == "finalize":
@@ -144,15 +220,16 @@ def main(argv: list[str] | None = None) -> int:
                     else None
                 ),
             }
-        with TelemetryStore(config.database_path) as telemetry:
-            report = finalize_reports(
+        with TelemetryStore(config.database_path, storage_config=config) as telemetry:
+            report = _finalize_for_config(
                 config=config,
                 mappings=mappings,
                 mapping_report=mapping_report,
                 telemetry=telemetry,
                 run_metadata=run_metadata,
             )
-        print(json.dumps({"report": str(config.report_dir / "final_multi_asset_shadow_report.md"), "classification": report["classification"]}, indent=2))
+        report_name = "final_report.md" if config.is_priority_failover else "final_multi_reference_shadow_report.md"
+        print(json.dumps({"report": str(config.report_dir / report_name), "classification": report["classification"]}, indent=2))
         return 0
     raise AssertionError(args.command)
 

@@ -3,89 +3,499 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DERIVE MULTI-ASSET BINANCE-REFERENCE ADAPTIVE MM</title>
+  <title>DERIVE MULTI-ASSET MULTI-VENUE ADAPTIVE MM MAINNET SHADOW MONITOR — PRIORITY REFERENCE — DERIVE MULTI-ASSET BINANCE-REFERENCE ADAPTIVE MM</title>
   <style>
     :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e9eefb; }
-    body { margin: 0; padding: 24px; max-width: 1500px; margin-inline: auto; }
+    html { overflow-x: hidden; }
+    body { box-sizing: border-box; margin: 0 auto; padding: 24px; max-width: 1700px; width: 100%; overflow-x: hidden; }
     h1 { font-size: 1.25rem; letter-spacing: .04em; margin: 0 0 16px; }
-    .banner { border: 1px solid #d7a738; background: #2c2410; padding: 14px; border-radius: 8px; margin-bottom: 18px; }
+    h2 { font-size: 1rem; margin: 24px 0 10px; }
+    .banner { border: 1px solid #d7a738; background: #2c2410; padding: 14px; border-radius: 8px; margin-bottom: 18px; line-height: 1.55; }
     .banner strong { color: #ffd467; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 14px 0 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; }
     .card { background: #151c31; border: 1px solid #2b385b; border-radius: 8px; padding: 12px; }
-    .label { color: #9eaccb; font-size: .75rem; text-transform: uppercase; }
+    .label { color: #9eaccb; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; }
     .value { font-size: 1.1rem; margin-top: 5px; overflow-wrap: anywhere; }
-    .signal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 0 0 20px; }
-    .signal-title { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
-    .bar { height: 8px; border-radius: 99px; background: #26324f; overflow: hidden; }
-    .bar i { display: block; height: 100%; background: #67d49b; border-radius: inherit; }
-    .signal-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: .78rem; }
-    table { width: 100%; border-collapse: collapse; background: #11182b; margin-bottom: 18px; font-size: .82rem; }
-    th, td { text-align: right; padding: 8px 7px; border-bottom: 1px solid #26324f; white-space: nowrap; }
+    .small { font-size: .78rem; }
+    table { width: 100%; border-collapse: collapse; background: #11182b; margin-bottom: 18px; font-size: .78rem; }
+    th, td { text-align: right; padding: 7px 6px; border-bottom: 1px solid #26324f; white-space: nowrap; }
     th:first-child, td:first-child { text-align: left; }
-    th { color: #9eaccb; font-weight: 600; }
+    th { color: #9eaccb; font-weight: 600; position: sticky; top: 0; background: #11182b; }
+    .scroll { overflow-x: auto; border: 1px solid #26324f; border-radius: 8px; }
     .ok { color: #67d49b; } .warn { color: #ffd467; } .bad { color: #ff8585; }
     .muted { color: #9eaccb; }
-    @media (max-width: 800px) { body { padding: 12px; overflow-x: auto; } table { min-width: 1050px; } }
+    .chart { height: 260px; width: 100%; background: #11182b; border: 1px solid #26324f; border-radius: 8px; }
+    .chart polyline { fill: none; stroke-width: 2; }
+    .chart .derive { stroke: #7aa7ff; } .chart .fair { stroke: #67d49b; }
+    .legend { display: flex; gap: 16px; margin: 8px 0; font-size: .78rem; }
+    .priority-flow { text-align: center; line-height: 1.45; color: #9fc0ff; }
+    .window-control { color: #9fc0ff; cursor: pointer; text-decoration: underline; }
+    .window-control:focus { outline: 1px solid #9fc0ff; outline-offset: 2px; }
+    .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+    .research-note { border-color: #49679e; background: #121d38; }
+    @media (max-width: 800px) { body { padding: 12px; } table { min-width: 1100px; } }
   </style>
 </head>
 <body>
-  <h1>DERIVE MULTI-ASSET BINANCE-REFERENCE ADAPTIVE MM — MAINNET MONITOR</h1>
+  <h1>DERIVE MULTI-ASSET MULTI-VENUE ADAPTIVE MM MAINNET SHADOW MONITOR</h1>
   <div class="banner">
-    <div><strong>DERIVE MAINNET</strong></div>
-    <div>MODE: <span id="mode">MAINNET_SHADOW</span></div>
-    <div>MAINNET ARMED: <span id="armed">FALSE</span></div>
+    <div><strong>DERIVE MAINNET · PUBLIC DATA ONLY</strong></div>
+    <div>MODE: <span id="mode">MAINNET_SHADOW</span> · MAINNET ARMED: <span id="armed">FALSE</span></div>
     <div>REAL ORDERS: <span id="real-orders">0</span> · REAL POSITIONS: <span id="real-positions">0</span></div>
-    <div><strong>MAINNET SHADOW — NO REAL ORDERS.</strong></div>
+    <div>CURRENT RUN ID: <span id="run-id">—</span></div>
+    <div>REFERENCE VENUES: <span id="reference-venues">BINANCE → BYBIT → OKX</span></div>
+    <div>REFERENCE PRIORITY: <span id="priority">BINANCE → BYBIT → OKX → PAUSE</span></div>
+    <div><strong>MAINNET SHADOW — NO REAL ORDERS.</strong> Derive is the only execution venue; reference venues are data-only.</div>
   </div>
   <section class="grid" id="summary"></section>
-  <h2>Reference divergence</h2>
-  <section class="signal-grid" id="signals"><div class="card muted">Waiting for decision telemetry…</div></section>
-  <h2>Asset market table</h2>
-  <table><thead><tr><th>Asset</th><th>Status</th><th>Derive mid</th><th>Binance fair</th><th>Basis bps</th><th>Mode</th><th>Direction</th><th>Inventory</th><th>Buy edge</th><th>Sell edge</th><th>Bid</th><th>Ask</th><th>Health</th></tr></thead><tbody id="assets"><tr><td colspan="13" class="muted">Waiting for public shadow state…</td></tr></tbody></table>
-  <h2>Lifecycle and safety</h2>
+
+  <h2>REFRESH-DEADBAND RESEARCH · <span id="refresh-active-label">ACTIVE ASSETS</span></h2>
+  <div class="card small research-note" id="refresh-research-meta">Waiting for the read-only refresh-deadband study…</div>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Current Derive mid</th><th>Current reference</th><th>Reference age s</th><th>Shadow bid</th><th>Shadow ask</th><th>1s return bps</th><th>Market mode</th><th>Adverse override</th><th>Runtime status</th></tr></thead><tbody id="refresh-current"><tr><td colspan="10" class="muted">Waiting for active-asset runtime telemetry…</td></tr></tbody></table></div>
+  <h2>REFRESH RATE-LIMIT / ACTION GOVERNANCE</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Deadband bps</th><th>Residency s</th><th>Creates/min</th><th>Replaces/min</th><th>Cancels/min</th><th>Total/min</th><th>1s peak</th><th>10s peak</th><th>60s peak</th><th>Avg utilization</th><th>Headroom/s</th><th>Classification</th></tr></thead><tbody id="refresh-rate"><tr><td colspan="13" class="muted">Waiting for rate-limit telemetry…</td></tr></tbody></table></div>
+  <h2>DEADBAND / RESIDENCY MATRIX · CONSERVATIVE</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Deadband bps</th><th>Residency s</th><th>Quotes</th><th>Replaces/min</th><th>Median lifetime ms</th><th>Queue residency proxy ms</th><th>Strict crossings</th><th>Fills</th><th>Fills/hour</th><th>30s markout</th><th>60s markout</th><th>30s net</th><th>60s net</th><th>Rate</th><th>Stale s</th><th>Status</th></tr></thead><tbody id="refresh-matrix"><tr><td colspan="17" class="muted">Waiting for deadband/residency matrix…</td></tr></tbody></table></div>
+  <h2>PER-ASSET RECOMMENDATIONS</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Decision</th><th>Recommendation</th><th>Best deadband bps</th><th>Best residency s</th><th>Trades denominator</th><th>Conservative fills</th><th>30s markouts</th><th>60s markouts</th><th>Auto-apply</th></tr></thead><tbody id="refresh-assets"><tr><td colspan="10" class="muted">Waiting for research recommendations…</td></tr></tbody></table></div>
+
+  <h2>ACCOUNTING / MARKOUT REPAIR · <span id="accounting-active-label">ACTIVE ASSETS</span></h2>
+  <div class="card small research-note" id="accounting-repair-meta">Waiting for the read-only accounting repair snapshot…</div>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Model</th><th>Fill model</th><th>Fills</th><th>Canonical volume USDC</th><th>60s complete</th><th>60s missing</th><th>Net samples</th><th>Net capture bps</th><th>Net status</th><th>Equity USDC</th><th>Equity status</th><th>Drawdown USDC</th><th>Drawdown %</th></tr></thead><tbody id="accounting-repair"><tr><td colspan="14" class="muted">Waiting for accounting repair telemetry…</td></tr></tbody></table></div>
+
+  <h2>6-HOUR VALIDATION</h2>
+  <div class="card small" id="validation6h-meta">Waiting for the detached six-hour MAINNET_SHADOW run…</div>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Derive mid</th><th>Spread bps</th><th>Derive trades/hour</th><th>Trade age s</th><th>Current reference</th><th>Reference age s</th><th>Shadow bid</th><th>Shadow ask</th><th>Creates</th><th>Replaces</th><th>Cancels</th><th>Conservative fills</th><th>Touch fills</th><th>Maker volume/hour</th><th>5s markout</th><th>30s markout</th><th>60s markout</th><th>Net capture</th><th>Quote uptime</th><th>Trade feed</th></tr></thead><tbody id="validation6h-assets"><tr><td colspan="21" class="muted">Waiting for six-hour telemetry…</td></tr></tbody></table></div>
+
+  <h2>6-HOUR TRADE-FEED PANEL</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Classification</th><th>Trades/hour</th><th>Trade notional/hour</th><th>Trade age s</th></tr></thead><tbody id="validation6h-trades"><tr><td colspan="5" class="muted">Waiting for six-hour trade telemetry…</td></tr></tbody></table></div>
+
+  <h2>6-HOUR CHURN PANEL</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Creates/min</th><th>Replaces/min</th><th>Cancels/min</th><th>Quote mutations/min</th><th>Max mutations/60s</th><th>P90 mutations/min</th></tr></thead><tbody id="validation6h-churn"><tr><td colspan="7" class="muted">Waiting for six-hour churn telemetry…</td></tr></tbody></table></div>
+
+  <h2>6-HOUR REFERENCE PANEL</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Binance selected uptime</th><th>Bybit selected time</th><th>OKX selected time</th><th>Source switches</th><th>Reference pauses</th><th>Disagreement pauses</th><th>Current reference</th><th>Current health</th></tr></thead><tbody id="validation6h-reference"><tr><td colspan="9" class="muted">Waiting for six-hour reference telemetry…</td></tr></table></div>
+
+  <h2>QUOTE QUALITY PANEL</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Current shadow bid</th><th>Current shadow ask</th><th>Quote age ms</th><th>Queue residency proxy ms</th><th>Distance to touch bps</th><th>Distance to fair bps</th><th>Creates/min</th><th>Replaces/min</th><th>Cancels/min</th><th>Current replace reason</th><th>Derive bid</th><th>Derive ask</th><th>Quote uptime</th></tr></thead><tbody id="quote-quality"><tr><td colspan="14" class="muted">Waiting for quote-quality telemetry…</td></tr></tbody></table></div>
+  <h2>FILL DIAGNOSTIC PANEL</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Derive trades/hour</th><th>Trades while quoting</th><th>Strict trade-throughs</th><th>Touch events</th><th>Potential churn-missed fills</th><th>Conservative fills</th><th>Touch fills</th><th>Last trade</th><th>Last fill</th><th>Evidence</th></tr></thead><tbody id="fill-diagnostic"><tr><td colspan="11" class="muted">Waiting for fill telemetry…</td></tr></tbody></table></div>
+  <h2>QUOTE LIFETIME / CROSSING DETAIL</h2>
+  <div class="card small" id="quote-fill-diagnostic-meta">Waiting for the causal quote/fill diagnostic snapshot…</div>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Model</th><th>Trades/hour</th><th>Median lifetime ms</th><th>P90 lifetime ms</th><th>Survival / age bands</th><th>Queue residency proxy ms</th><th>Mutations/min</th><th>Touch s</th><th>One tick s</th><th>Two+ ticks s</th><th>Inside spread s</th><th>Strict crossings</th><th>Touches</th><th>Conservative fills</th><th>30s markouts</th><th>60s markouts</th><th>Root cause</th><th>Evidence</th></tr></thead><tbody id="quote-fill-diagnostic"><tr><td colspan="19" class="muted">Waiting for diagnostic telemetry…</td></tr></tbody></table></div>
+  <div class="card small" id="storage-diagnostic">Storage health is read-only and will appear with the diagnostic snapshot.</div>
+
+  <h2>Primary reference priority</h2>
+  <div class="card priority-flow">BINANCE<br>↓<br>BYBIT<br>↓<br>OKX<br>↓<br>PAUSE ASSET WHEN ALL ARE STALE OR DISAGREE</div>
+
+  <h2>Active strategy assets</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Derive bid</th><th>Derive ask</th><th>Spread bps</th><th>Current reference</th><th>Binance health</th><th>Bybit health</th><th>OKX health</th><th>Reference fair value</th><th>Reference age s</th><th>Derive/reference basis bps</th><th>Market mode</th><th>Direction</th><th>Inventory mode</th><th>Shadow bid</th><th>Shadow ask</th><th>Fills</th><th>30s markout</th><th>60s markout</th><th>Net capture</th></tr></thead><tbody id="priority-assets"><tr><td colspan="20" class="muted">Waiting for priority shadow state…</td></tr></tbody></table></div>
+
+  <h2>Priority failover dashboard</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Current source</th><th>Time using Binance s</th><th>Time using Bybit s</th><th>Time using OKX s</th><th>Time paused s</th><th>Binance failures</th><th>Bybit failovers</th><th>OKX failovers</th><th>Recovery events</th><th>Source switches</th></tr></thead><tbody id="priority-failover"><tr><td colspan="11" class="muted">Waiting for priority failover telemetry…</td></tr></tbody></table></div>
+
+  <h2>Reference health matrix</h2>
+  <div class="scroll"><table><thead id="health-matrix-head"><tr><th>Asset</th><th>Binance</th><th>Bybit</th><th>OKX</th><th>Selected source</th></tr></thead><tbody id="health-matrix"><tr><td colspan="5" class="muted">Waiting for health telemetry…</td></tr></tbody></table></div>
+
+  <h2>Per-asset / per-source health matrix</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Source</th><th>Status</th><th>BBO age s</th><th>Median gap s</th><th>P99 gap s</th><th>Max gap s</th><th>Seq gaps</th><th>Out of order</th><th>Rejected</th><th>Parse fails</th><th>Reconnects</th></tr></thead><tbody id="health"><tr><td colspan="12" class="muted">Waiting for health telemetry…</td></tr></tbody></table></div>
+
+  <h2>Reference failover and protection counters</h2>
+  <div class="scroll"><table><thead><tr><th>Venue</th><th>Eligible rows</th><th>Valid rows</th><th>Exclusion rows</th><th>Outlier rows</th><th>Stale rows</th><th>Reconnects</th><th>Single-source periods</th><th>Multi-source periods</th></tr></thead><tbody id="failover"><tr><td colspan="9" class="muted">Waiting for failover telemetry…</td></tr></tbody></table></div>
+  <div class="card small" id="alerts">Waiting for reference alerts…</div>
+
+  <h2>Reference diagnostics — not the primary fair-value path</h2>
+  <div class="scroll"><table><thead id="consensus-head"><tr><th>Asset</th><th>Consensus fair</th><th>BINANCE FV</th><th>BYBIT FV</th><th>OKX FV</th><th>Robust median</th><th>Final Derive FV</th><th>Derive mid</th><th>Derive basis bps</th><th>Sources</th><th>Valid</th><th>Dispersion bps</th><th>Confidence</th><th>Outliers</th><th>Pause reason</th></tr></thead><tbody id="consensus"><tr><td colspan="15" class="muted">Waiting for consensus telemetry…</td></tr></tbody></table></div>
+
+  <h2>Selected-asset source detail</h2>
+  <div class="scroll"><table><thead><tr><th>Source</th><th>Bid</th><th>Ask</th><th>Mid</th><th>Microprice</th><th>Age s</th><th>Updates/sec</th><th>Gaps</th><th>Reconnects</th><th>Deviation bps</th><th>Health</th></tr></thead><tbody id="source-detail"><tr><td colspan="11" class="muted">Waiting for source detail…</td></tr></tbody></table></div>
+
+  <h2>Asset market and quote diagnostics</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Mapping</th><th>Derive mid</th><th>Spread bps</th><th>Selected reference FV</th><th>Basis bps</th><th>Fresh sources</th><th>Dispersion bps</th><th>Vol state</th><th>Direction</th><th>Market</th><th>Inventory</th><th>Min order notional</th><th>Buy edge</th><th>Sell edge</th><th>Shadow bid</th><th>Shadow ask</th><th>Fills</th><th>Maker volume</th><th>30s markout</th><th>Net capture</th><th>Score</th><th>Health</th></tr></thead><tbody id="assets"><tr><td colspan="23" class="muted">Waiting for public shadow state…</td></tr></tbody></table></div>
+
+  <h2>Asset reference comparison</h2>
+  <div class="scroll"><table><thead><tr><th>Asset</th><th>Control</th><th>30s markout bps</th><th>60s markout bps</th><th>Net capture bps</th><th>Fills</th><th>Status</th></tr></thead><tbody id="asset-comparison"><tr><td colspan="7" class="muted">Waiting for control comparison…</td></tr></tbody></table></div>
+
+  <h2>Selected-asset causal price chart</h2>
+  <div class="card small">First active asset: <span id="selected-asset" class="ok">—</span>. Points are observed decision snapshots; missing observations are not forward-filled.</div>
+  <div class="legend"><span><i class="dot" style="background:#7aa7ff"></i>Derive mid</span><span><i class="dot" style="background:#67d49b"></i>selected fair value</span><span>Window: <span class="window-control" role="button" tabindex="0" data-window="300">5m</span> <span class="window-control" role="button" tabindex="0" data-window="900">15m</span> <span class="window-control" role="button" tabindex="0" data-window="3600">1h</span></span></div>
+  <svg class="chart" viewBox="0 0 1000 260" preserveAspectRatio="none" aria-label="Selected asset price chart"><polyline id="derive-line" class="derive" points=""></polyline><polyline id="fair-line" class="fair" points=""></polyline></svg>
+
+  <h2>Storage-efficient minute history</h2>
+  <div class="card small" id="minute-history-meta">Minute aggregates preserve one row per asset per minute; the current six-hour run may predate this table.</div>
+  <div class="scroll"><table><thead><tr><th>Minute</th><th>Observations</th><th>Feature snapshots</th><th>Derive median mid</th><th>Median spread bps</th><th>Spread P90 bps</th><th>Reference fair median</th><th>Basis median bps</th><th>Reference</th><th>Quote uptime</th><th>Creates</th><th>Replaces</th><th>Cancels</th><th>Holds</th><th>Blocks</th><th>Derive trades</th><th>Conservative fills</th><th>Touch fills</th><th>Maker volume</th><th>PnL Δ</th><th>Errors</th><th>Detail / rollup</th></tr></thead><tbody id="minute-history"><tr><td colspan="22" class="muted">Waiting for minute aggregates…</td></tr></tbody></table></div>
+
+  <h2>Opportunity ranking</h2>
+  <div class="scroll"><table><thead><tr><th>Rank</th><th>Asset</th><th>Score</th><th>Median spread bps</th><th>Health</th><th>Blocked rows</th><th>Conservative fills</th><th>Touch fills</th></tr></thead><tbody id="ranking"><tr><td colspan="8" class="muted">Waiting for report…</td></tr></tbody></table></div>
+
+  <h2>Control portfolios and exposure</h2>
+  <div class="scroll"><table><thead><tr><th>Model</th><th>Control</th><th>Fill model</th><th>Equity</th><th>Gross inventory</th><th>Net inventory</th><th>Fees</th><th>Fills</th><th>Max drawdown</th></tr></thead><tbody id="models"><tr><td colspan="9" class="muted">Waiting for portfolio state…</td></tr></tbody></table></div>
+
+  <h2>Lifecycle, safety, and run classification</h2>
   <div class="card"><pre id="details" class="muted">No run yet.</pre></div>
   <script>
     const fmt = v => {
-      if (v === null || v === undefined) return "—";
-      if ((typeof v === 'number' || (typeof v === 'string' && /^[-+]?\d+(\.\d+)?$/.test(v))) && Number.isFinite(Number(v))) {
-        return Number(v).toLocaleString(undefined, {maximumFractionDigits: 6});
-      }
-      return String(v);
+      if (v === null || v === undefined || v === '') return '—';
+      const n = Number(v);
+      return Number.isFinite(n) && typeof v !== 'boolean' ? n.toLocaleString(undefined, {maximumFractionDigits: 6}) : String(v);
     };
     const esc = v => fmt(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const number = v => v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v);
+    const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
     const card = (label, value) => `<div class="card"><div class="label">${label}</div><div class="value">${fmt(value)}</div></div>`;
-    function draw(state) {
+    const listValue = value => Array.isArray(value) ? value : (value && typeof value === 'object' ? Object.keys(value) : []);
+    const minuteText = value => { const n = num(value); return n === null ? '—' : new Date(n * 1000).toISOString().slice(0, 16).replace('T', ' ') + 'Z'; };
+    const activeReferenceVenues = state => (state.reference_venues || ['binance', 'bybit', 'okx']).filter(venue => ['binance', 'bybit', 'okx'].includes(String(venue).toLowerCase()));
+    let selectedWindowSeconds = 300;
+    const statusClass = value => ['HEALTHY','READY','COMPLETE','RUNNING','BINANCE','BYBIT','OKX','SUFFICIENT'].includes(String(value)) ? 'ok' : ['STALE','DEGRADED','PAUSED','PAUSE','BOOTSTRAPPED','UNOBSERVED','N/A','MORE_DATA_REQUIRED','WAITING_FOR_SNAPSHOT'].includes(String(value)) ? 'warn' : 'bad';
+    const healthText = counts => Object.entries(counts || {}).map(([key, value]) => `${key}:${value}`).join(' ') || '—';
+    const liveHealthCounts = (state, venueFilter) => {
+      const counts = {};
+      for (const venues of Object.values(state.source_health || {})) {
+        for (const [venue, payload] of Object.entries(venues || {})) {
+          if (venueFilter && !venueFilter.includes(venue)) continue;
+          const health = payload.health || 'UNOBSERVED';
+          counts[health] = (counts[health] || 0) + 1;
+        }
+      }
+      return counts;
+    };
+    const priorityStatus = decision => {
+      if (!decision) return 'PAUSED';
+      if (decision.reference_pause_reason) return 'PAUSED';
+      return decision.selected_reference || 'PAUSED';
+    };
+    function drawHealthMatrix(state) {
+      const venues = activeReferenceVenues(state);
+      document.getElementById('health-matrix-head').innerHTML = `<tr><th>Asset</th>${venues.map(venue => `<th>${esc(String(venue).toUpperCase())}</th>`).join('')}<th>Selected source</th></tr>`;
+      const latest = state.latest_decisions || {};
+      const rows = Object.keys(state.mappings || latest).map(asset => {
+        const sourceHealth = (state.source_health || {})[asset] || {};
+        const cells = venues.map(venue => {
+          const value = sourceHealth[venue] && sourceHealth[venue].health ? sourceHealth[venue].health : 'N/A';
+          return `<td class="${statusClass(value)}">${esc(value)}</td>`;
+        }).join('');
+        const selected = priorityStatus(latest[asset]);
+        return `<tr><td>${esc(asset)}</td>${cells}<td class="${statusClass(selected)}">${esc(selected)}</td></tr>`;
+      });
+      document.getElementById('health-matrix').innerHTML = rows.join('') || `<tr><td colspan="${venues.length + 2}" class="muted">No health rows yet.</td></tr>`;
+    }
+    function drawHealth(state) {
+      const allowedVenues = new Set([...activeReferenceVenues(state), 'derive']);
+      const rows = [];
+      for (const [asset, venueHealth] of Object.entries(state.source_health || {})) {
+        for (const [venue, h] of Object.entries(venueHealth || {})) {
+          if (!allowedVenues.has(venue)) continue;
+          rows.push(`<tr><td>${esc(asset)}</td><td>${esc(venue)}</td><td class="${statusClass(h.health)}">${esc(h.health)}</td><td>${esc(h.bbo_age)}</td><td>${esc(h.median_update_interval)}</td><td>${esc(h.p99_update_interval)}</td><td>${esc(h.maximum_recent_gap)}</td><td>${esc(h.sequence_gaps)}</td><td>${esc(h.out_of_order)}</td><td>${esc(h.rejected_messages)}</td><td>${esc(h.parse_failures)}</td><td>${esc(h.reconnect_count)}</td></tr>`);
+        }
+      }
+      document.getElementById('health').innerHTML = rows.join('') || '<tr><td colspan="12" class="muted">No health rows yet.</td></tr>';
+    }
+    function drawFailover(state, report) {
+      const counters = (report && report.summary && report.summary.reference_failover_counters) || {};
+      const allowed = new Set(activeReferenceVenues(state));
+      const rows = Object.entries(counters).filter(([venue]) => allowed.has(venue)).map(([venue, counter]) => `<tr><td>${esc(venue)}</td><td>${esc(counter.eligible_rows)}</td><td>${esc(counter.valid_rows)}</td><td>${esc(counter.exclusion_rows)}</td><td>${esc(counter.outlier_rows)}</td><td>${esc(counter.stale_rows)}</td><td>${esc(counter.reconnect_count)}</td><td>${esc(counter.single_source_periods)}</td><td>${esc(counter.multi_source_periods)}</td></tr>`);
+      document.getElementById('failover').innerHTML = rows.join('') || '<tr><td colspan="9" class="muted">No failover counters yet.</td></tr>';
+      const alerts = [];
+      const running = String(state.status) === 'RUNNING';
+      const activeVenues = new Set(activeReferenceVenues(state));
+      for (const [asset, venues] of Object.entries(state.source_health || {})) {
+        for (const [venue, health] of Object.entries(venues || {})) {
+          if (!activeVenues.has(venue)) continue;
+          if (health.health === 'STALE') alerts.push(`SOURCE STALE: ${asset}/${venue}`);
+          if (running && health.connected === false && Number(health.reconnect_count || 0) > 0) alerts.push(`SOURCE RECONNECTING: ${asset}/${venue}`);
+        }
+      }
+      for (const [asset, decision] of Object.entries(state.latest_decisions || {})) {
+        for (const venue of listValue(decision.reference_outliers)) {
+          if (activeVenues.has(venue)) alerts.push(`SOURCE OUTLIER: ${asset}/${venue}`);
+        }
+        if (decision.reference_pause_reason === 'REFERENCE_DISAGREEMENT_PAUSE') alerts.push(`REFERENCE DISAGREEMENT: ${asset}`);
+        if (decision.reference_pause_reason) alerts.push(`REFERENCE PAUSED: ${asset}/${decision.reference_pause_reason}`);
+      }
+      const pauseEvents = report && report.summary ? report.summary.reference_pause_events : null;
+      const historical = pauseEvents === null || pauseEvents === undefined ? '' : ` Historical reference pause events: ${fmt(pauseEvents)}.`;
+      document.getElementById('alerts').textContent = alerts.length ? alerts.join(' · ') + historical : 'No active source/outlier/disagreement alerts.' + historical;
+    }
+    function drawPriorityFailover(report) {
+      const rows = (report && report.priority_failover_summary || []).map(row => `<tr><td>${esc(row.asset)}</td><td class="${statusClass(row.current_source)}">${esc(row.current_source)}</td><td>${esc(row.time_using_binance)}</td><td>${esc(row.time_using_bybit)}</td><td>${esc(row.time_using_okx)}</td><td>${esc(row.time_paused)}</td><td>${esc(row.binance_failures)}</td><td>${esc(row.bybit_failovers)}</td><td>${esc(row.okx_failovers)}</td><td>${esc(row.recovery_events)}</td><td>${esc(row.source_switches)}</td></tr>`).join('');
+      document.getElementById('priority-failover').innerHTML = rows || '<tr><td colspan="11" class="muted">No priority failover rows yet.</td></tr>';
+    }
+    function drawSourceDetail(state, asset) {
+      const decision = (state.latest_decisions || {})[asset] || {};
+      const health = (state.source_health || {})[asset] || {};
+      const venues = [...activeReferenceVenues(state), 'derive'];
+      const mids = decision.source_mids || {};
+      const microprices = decision.source_microprices || {};
+      const bbo = decision.source_bbo || {};
+      const deviations = decision.reference_deviations_bps || {};
+      const deriveBid = num(decision.derive_bid), deriveAsk = num(decision.derive_ask);
+      const started = num(state.started_at);
+      const ended = num(state.ended_at);
+      const elapsed = started === null ? null : Math.max(1, (ended === null ? Date.now() / 1000 : ended) - started);
+      const rows = venues.map(venue => {
+        const h = health[venue] || {};
+        const bid = venue === 'derive' ? deriveBid : (bbo[venue] ? num(bbo[venue].bid) : null);
+        const ask = venue === 'derive' ? deriveAsk : (bbo[venue] ? num(bbo[venue].ask) : null);
+        const mid = bid !== null && ask !== null ? (bid + ask) / 2 : mids[venue];
+        const deviation = deviations[venue];
+        const updatesPerSecond = elapsed === null || h.updates === undefined ? null : Number(h.updates) / elapsed;
+        return `<tr><td>${esc(venue)}</td><td>${esc(bid)}</td><td>${esc(ask)}</td><td>${esc(mid)}</td><td>${esc(venue === 'derive' ? microprices.derive : microprices[venue])}</td><td>${esc(h.bbo_age)}</td><td>${esc(updatesPerSecond)}</td><td>${esc(h.sequence_gaps)}</td><td>${esc(h.reconnect_count)}</td><td>${esc(deviation === undefined ? '' : deviation)}</td><td class="${statusClass(h.health)}">${esc(h.health || 'UNOBSERVED')}</td></tr>`;
+      });
+      document.getElementById('source-detail').innerHTML = rows.join('') || '<tr><td colspan="11" class="muted">No source detail yet.</td></tr>';
+    }
+    function drawPriorityAssets(state, report) {
+      const summary = Object.fromEntries((report && report.asset_summary || []).map(row => [row.asset, row]));
+      const latest = state.latest_decisions || {};
+      const assets = state.active_assets || Object.keys(state.mappings || latest);
+      const rows = assets.map(asset => {
+        const d = latest[asset] || {}, s = summary[asset] || {}, h = (state.source_health || {})[asset] || {};
+        const bbo = d.source_bbo || {};
+        const deriveBid = num(d.derive_bid), deriveAsk = num(d.derive_ask);
+        const value = (key, fallback) => s[key] ?? fallback;
+        const healthCell = venue => `<td class="${statusClass((h[venue] || {}).health)}">${esc((h[venue] || {}).health || 'UNOBSERVED')}</td>`;
+        return `<tr><td>${esc(asset)}</td><td>${esc(bbo.derive ? bbo.derive.bid : deriveBid)}</td><td>${esc(bbo.derive ? bbo.derive.ask : deriveAsk)}</td><td>${esc(value('derive_spread_bps', d.derive_spread_bps))}</td><td class="${statusClass(value('selected_reference', d.selected_reference))}">${esc(value('selected_reference', d.selected_reference || 'PAUSE'))}</td>${healthCell('binance')}${healthCell('bybit')}${healthCell('okx')}<td>${esc(value('reference_fair_value', d.reference_fair_value))}</td><td>${esc(value('reference_age_seconds', d.reference_data_age_seconds))}</td><td>${esc(value('basis_bps', d.basis_bps))}</td><td>${esc(value('market_mode', d.market_mode))}</td><td>${esc(value('direction', d.direction))}</td><td>${esc(value('inventory_mode', d.inventory_mode))}</td><td>${esc(value('shadow_bid', d.desired_bid))}</td><td>${esc(value('shadow_ask', d.desired_ask))}</td><td>${esc(value('fills', 0))}</td><td>${esc(value('markout_30s_bps', ''))}</td><td>${esc(value('markout_60s_bps', ''))}</td><td>${esc(value('net_capture_bps', ''))}</td></tr>`;
+      }).join('');
+      document.getElementById('priority-assets').innerHTML = rows || '<tr><td colspan="20" class="muted">No active priority assets.</td></tr>';
+    }
+    function drawQuoteFillDiagnostic(payload) {
+      const meta = {
+        available: payload && payload.available,
+        run_id: payload && payload.run_id,
+        status: payload && (payload.diagnostic_status || payload.run_status),
+        bitget: payload && payload.bitget_runtime_status,
+        bitget_profile_enabled: payload && payload.bitget_enabled,
+        runtime_bitget_enabled: payload && payload.runtime_bitget_enabled,
+        restart_required_to_remove_bitget: payload && payload.restart_required_to_remove_bitget,
+        observation_policy: payload && payload.observation_policy,
+        evidence_gate: payload && payload.evidence_gate,
+      };
+      document.getElementById('quote-fill-diagnostic-meta').textContent = JSON.stringify(meta, null, 2);
+      const assets = (payload && payload.assets || []).filter(row => row.model === 'PRIORITY_FAILOVER:CONSERVATIVE');
+      const qualityRows = assets.map(row => `<tr><td>${esc(row.asset)}</td><td>${esc(row.current_shadow_bid)}</td><td>${esc(row.current_shadow_ask)}</td><td>${esc(row.current_quote_age_ms)}</td><td>${esc(row.queue_residency_proxy_median_ms)}</td><td>${esc(row.distance_to_touch_median_bps)}</td><td>${esc(row.distance_to_fair_value_median_bps)}</td><td>${esc(row.creates_per_min)}</td><td>${esc(row.replaces_per_min)}</td><td>${esc(row.cancels_per_min)}</td><td>${esc(row.current_replace_reason || '—')}</td><td>${esc(row.current_derive_bid)}</td><td>${esc(row.current_derive_ask)}</td><td>${esc(row.quote_uptime_pct)}</td></tr>`).join('');
+      document.getElementById('quote-quality').innerHTML = qualityRows || '<tr><td colspan="14" class="muted">No quote-quality row yet.</td></tr>';
+      const churnMissed = payload && payload.potential_churn_missed_fill_count_by_asset || {};
+      const fillRows = assets.map(row => `<tr><td>${esc(row.asset)}</td><td>${esc(row.trades_per_hour)}</td><td>${esc(row.trades_while_quoting)}</td><td>${esc(row.strict_crossings)}</td><td>${esc(row.touches_or_better)}</td><td>${esc(churnMissed[row.asset] ?? 0)}</td><td>${esc(row.conservative_fills)}</td><td>${esc(row.touch_fills)}</td><td>${esc(row.last_trade_time_utc || '—')} ${esc(row.last_trade_price ?? '')}</td><td>${esc(row.last_fill_time_utc || '—')} ${esc(row.last_fill_price ?? '')}</td><td class="${statusClass(row.sample_status)}">${esc(row.sample_status)}</td></tr>`).join('');
+      document.getElementById('fill-diagnostic').innerHTML = fillRows || '<tr><td colspan="11" class="muted">No fill-diagnostic row yet.</td></tr>';
+      const rows = assets.map(row => {
+        const survival = ['100ms','250ms','500ms','1s','2s','5s','10s','30s'].map(label => [label, row['survived_' + label + '_pct']]).filter(pair => pair[1] !== undefined && pair[1] !== null).map(pair => pair[0] + ':' + fmt(pair[1]) + '%').join(' ');
+        return `<tr><td>${esc(row.asset)}</td><td>${esc(row.model)}</td><td>${esc(row.trades_per_hour)}</td><td>${esc(row.median_lifetime_ms)}</td><td>${esc(row.p90_lifetime_ms)}</td><td>${esc(survival || '—')}</td><td>${esc(row.queue_residency_proxy_median_ms)}</td><td>${esc(row.quote_mutations_per_min)}</td><td>${esc(row.time_at_touch_seconds)}</td><td>${esc(row.time_one_tick_seconds)}</td><td>${esc(row.time_two_plus_ticks_seconds)}</td><td>${esc(row.inside_spread_seconds)}</td><td>${esc(row.strict_crossings)}</td><td>${esc(row.touches_or_better)}</td><td>${esc(row.conservative_fills)}</td><td>${esc(row.markout_30s_count)}</td><td>${esc(row.markout_60s_count)}</td><td class="${statusClass(row.root_cause)}">${esc(row.root_cause)}</td><td class="${statusClass(row.sample_status)}">${esc(row.sample_status)}</td></tr>`;
+      }).join('');
+      document.getElementById('quote-fill-diagnostic').innerHTML = rows || '<tr><td colspan="19" class="muted">No primary-control diagnostic row yet.</td></tr>';
+      const storage = (payload && payload.storage_health || [])[0] || {};
+      document.getElementById('storage-diagnostic').textContent = JSON.stringify({
+        storage_state: storage.storage_state,
+        free_disk_gb: storage.free_disk_gb,
+        current_run_size_bytes: storage.current_run_size_bytes,
+        raw_buffer_bytes_in_db_wal_shm: storage.raw_buffer_bytes_in_db_wal_shm,
+        aggregate_table_bytes: storage.aggregate_table_bytes,
+        compressed_archive_bytes_visible: storage.compressed_archive_bytes_visible,
+        pruned_rows_total: storage.pruned_rows_total,
+        raw_retention_seconds: storage.raw_retention_seconds,
+        feature_persist_interval_seconds: storage.feature_persist_interval_seconds,
+        aggregate_interval_seconds: storage.aggregate_interval_seconds,
+      }, null, 2);
+    }
+    function draw(state, report) {
       document.getElementById('mode').textContent = fmt(state.mode);
       document.getElementById('armed').textContent = String(state.mainnet_armed).toUpperCase();
       document.getElementById('real-orders').textContent = fmt(state.real_orders);
       document.getElementById('real-positions').textContent = fmt(state.real_positions);
+      document.getElementById('run-id').textContent = fmt(state.run_id || state.dashboard_context_run_id || (report && report.run_id));
+      document.getElementById('priority').textContent = (state.reference_priority || (report && report.reference_priority) || ['binance','bybit','okx']).join(' → ').toUpperCase() + ' → PAUSE';
+      const referenceVenues = activeReferenceVenues(state);
+      document.getElementById('reference-venues').textContent = referenceVenues.map(venue => String(venue).toUpperCase()).join(' → ');
       const models = state.models || {};
-      const conservative = models.CONSERVATIVE || {};
+      const selected = models['PRIORITY_FAILOVER:CONSERVATIVE'] || models['MULTI_SOURCE_CONSENSUS:CONSERVATIVE'] || models['BINANCE_ONLY_REFERENCE:CONSERVATIVE'] || {};
+      const reportSummary = (report && report.summary) || {};
+      const referenceHealth = reportSummary.reference_health || liveHealthCounts(state, referenceVenues);
+      const deriveHealth = reportSummary.derive_health || liveHealthCounts(state, ['derive']);
       document.getElementById('summary').innerHTML = [
-        card('Shadow equity', conservative.equity), card('Shadow gross inventory', conservative.gross_inventory),
-        card('Shadow net inventory', conservative.net_inventory), card('Shadow fees', conservative.fees),
-        card('Max drawdown', conservative.max_drawdown), card('Active assets', (state.active_assets || []).length),
-        card('Shadow conservative fills', conservative.fills), card('Last update', state.last_update)
+        card('Total assets', reportSummary.total_assets ?? Object.keys(state.mappings || {}).length),
+        card('Active assets', reportSummary.active_assets ?? (state.active_assets || []).length),
+        card('Reference health', healthText(referenceHealth)),
+        card('Derive health', healthText(deriveHealth)),
+        card('Selected shadow equity', selected.equity), card('Gross inventory', selected.gross_inventory),
+        card('Net inventory', selected.net_inventory), card('Shadow fees', selected.fees),
+        card('Shadow fills', reportSummary.shadow_fills ?? selected.fills),
+        card('Shadow volume', reportSummary.shadow_volume),
+        card('Net capture proxy bps', reportSummary.net_capture_proxy_bps),
+        card('Max drawdown', reportSummary.max_drawdown ?? selected.max_drawdown), card('Last update', state.last_update)
       ].join('');
+      drawHealthMatrix(state);
+      drawHealth(state);
+      drawFailover(state, report);
+      drawPriorityFailover(report);
+      drawPriorityAssets(state, report);
       const latest = state.latest_decisions || {};
-      const rows = Object.entries(state.mappings || {}).map(([asset, mapping]) => {
+      document.getElementById('consensus-head').innerHTML = `<tr><th>Asset</th><th>Consensus fair</th>${referenceVenues.map(venue => `<th>${esc(String(venue).toUpperCase())} FV</th>`).join('')}<th>Robust median</th><th>Final Derive FV</th><th>Derive mid</th><th>Derive basis bps</th><th>Sources</th><th>Valid</th><th>Dispersion bps</th><th>Confidence</th><th>Outliers</th><th>Pause reason</th></tr>`;
+      const consensusRows = Object.entries(latest).map(([asset, d]) => {
+        const sourceFairValues = d.source_fair_values || {};
+        const deriveMid = num(d.derive_bid) !== null && num(d.derive_ask) !== null ? (num(d.derive_bid) + num(d.derive_ask)) / 2 : null;
+        return `<tr><td>${esc(asset)}</td><td>${esc(d.reference_fair_value || d.fair_value)}</td>${referenceVenues.map(venue => `<td>${esc(sourceFairValues[venue])}</td>`).join('')}<td>${esc(d.reference_robust_median)}</td><td>${esc(d.fair_value)}</td><td>${esc(deriveMid)}</td><td>${esc(d.basis_bps)}</td><td>${esc(listValue(d.valid_reference_sources).join(', '))}</td><td>${esc(listValue(d.valid_reference_sources).length)}</td><td>${esc(d.reference_dispersion_bps)}</td><td>${esc(d.reference_confidence)}</td><td>${esc(listValue(d.reference_outliers).join(', '))}</td><td class="${d.reference_pause_reason ? 'warn' : 'ok'}">${esc(d.reference_pause_reason)}</td></tr>`;
+      }).join('');
+      document.getElementById('consensus').innerHTML = consensusRows || `<tr><td colspan="${referenceVenues.length + 12}" class="muted">No consensus rows yet.</td></tr>`;
+      const assetSummary = Object.fromEntries((report && report.asset_summary || []).map(row => [row.asset, row]));
+      const assetRows = Object.entries(state.mappings || {}).map(([asset, mapping]) => {
         const d = latest[asset] || {};
-        const bid = number(d.derive_bid);
-        const ask = number(d.derive_ask);
-        const deriveMid = bid !== null && ask !== null ? ((bid + ask) / 2).toFixed(6) : null;
-        return `<tr><td>${esc(asset)}</td><td class="${mapping.valid ? 'ok' : 'warn'}">${esc(mapping.reason)}</td><td>${esc(deriveMid)}</td><td>${esc(d.fair_value)}</td><td>${esc(d.basis_bps)}</td><td>${esc(d.market_mode)}</td><td>${esc(d.direction)}</td><td>${esc(d.inventory_mode)}</td><td>${esc(d.buy_edge_bps)}</td><td>${esc(d.sell_edge_bps)}</td><td>${esc(d.desired_bid)}</td><td>${esc(d.desired_ask)}</td><td class="${d.data_health === 'HEALTHY' ? 'ok' : 'warn'}">${esc(d.data_health || (mapping.valid ? 'WAITING' : 'REFERENCE_UNAVAILABLE'))}</td></tr>`;
+        const s = assetSummary[asset] || {};
+        const bid = num(d.derive_bid), ask = num(d.derive_ask);
+        const deriveMid = bid !== null && ask !== null ? (bid + ask) / 2 : null;
+        const value = (key, fallback) => s[key] ?? fallback;
+        return `<tr><td>${esc(asset)}</td><td class="${mapping.valid ? 'ok' : 'warn'}">${esc(mapping.reason)}</td><td>${esc(value('derive_mid', deriveMid))}</td><td>${esc(value('derive_spread_bps', d.derive_spread_bps))}</td><td>${esc(value('consensus_fair_value', d.reference_fair_value ?? d.fair_value))}</td><td>${esc(value('basis_bps', d.basis_bps))}</td><td>${esc(value('valid_sources', (d.valid_reference_sources || []).join(',')))}</td><td>${esc(value('source_dispersion_bps', d.reference_dispersion_bps))}</td><td>${esc(value('volatility', d.volatility))}</td><td>${esc(value('direction', d.direction))}</td><td>${esc(value('market_mode', d.market_mode))}</td><td>${esc(value('inventory_mode', d.inventory_mode))}</td><td>${esc(value('minimum_order_notional', ''))}</td><td>${esc(value('buy_edge_bps', d.buy_edge_bps))}</td><td>${esc(value('sell_edge_bps', d.sell_edge_bps))}</td><td>${esc(value('shadow_bid', d.desired_bid))}</td><td>${esc(value('shadow_ask', d.desired_ask))}</td><td>${esc(value('fills', 0))}</td><td>${esc(value('maker_volume', ''))}</td><td>${esc(value('conservative_30s_markout_bps', ''))}</td><td>${esc(value('net_capture_proxy_bps', ''))}</td><td>${esc(value('opportunity_score', d.opportunity_score))}</td><td class="${statusClass(d.data_health)}">${esc(d.data_health || 'WAITING')}</td></tr>`;
       }).join('');
-      document.getElementById('assets').innerHTML = rows || '<tr><td colspan="13" class="muted">No assets discovered.</td></tr>';
-      const signals = Object.entries(latest).map(([asset, d]) => {
-        const basis = number(d.basis_bps);
-        const width = basis === null ? 0 : Math.min(100, Math.max(3, Math.abs(basis) * 5));
-        return `<div class="card"><div class="signal-title"><strong>${esc(asset)}</strong><span class="muted">${esc(d.market_mode)}</span></div><div class="bar"><i style="width:${width}%"></i></div><div class="signal-meta"><span>basis ${esc(d.basis_bps)} bps</span><span>${d.divergence_protected ? 'PROTECTED' : 'NORMAL'}</span></div></div>`;
+      document.getElementById('assets').innerHTML = assetRows || '<tr><td colspan="23" class="muted">No assets discovered.</td></tr>';
+      const comparisons = (report && report.control_comparison || []).map(row => {
+        const markout30 = row.conservative_30s_markout_bps ?? row['30s_markout_bps'];
+        const markout60 = row.conservative_60s_markout_bps ?? row['60s_markout_bps'];
+        const netCapture = row.conservative_net_capture_proxy_bps ?? row.net_capture_bps;
+        const fills = row.shadow_fills ?? row.fills;
+        return `<tr><td>${esc(row.asset)}</td><td>${esc(row.control)}</td><td>${esc(markout30)}</td><td>${esc(markout60)}</td><td>${esc(netCapture)}</td><td>${esc(fills)}</td><td>${esc(row.status)}</td></tr>`;
       }).join('');
-      document.getElementById('signals').innerHTML = signals || '<div class="card muted">No decision telemetry yet.</div>';
-      document.getElementById('details').textContent = JSON.stringify({status: state.status, errors: state.errors, dashboard: state.dashboard_url}, null, 2);
+      document.getElementById('asset-comparison').innerHTML = comparisons || '<tr><td colspan="7" class="muted">No control comparison rows yet.</td></tr>';
+      const rankings = Object.entries(state.mappings || latest).map(([asset]) => {
+        const d = latest[asset] || {}, s = assetSummary[asset] || {};
+        return {asset, score: num(s.opportunity_score ?? d.opportunity_score), spread: num(s.derive_spread_bps ?? d.derive_spread_bps), health: d.data_health, blocked: d.block_reason ? 1 : 0, conservative: s.conservative_fills || 0, touch: s.touch_sensitivity_fills || 0};
+      });
+      rankings.sort((a,b) => (b.score || -1) - (a.score || -1));
+      document.getElementById('ranking').innerHTML = rankings.map((row, i) => `<tr><td>${i + 1}</td><td>${esc(row.asset)}</td><td>${esc(row.score)}</td><td>${esc(row.spread)}</td><td class="${statusClass(row.health)}">${esc(row.health)}</td><td>${esc(row.blocked)}</td><td>${esc(row.conservative)}</td><td>${esc(row.touch)}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No ranking rows yet.</td></tr>';
+      document.getElementById('models').innerHTML = Object.entries(models).map(([name, model]) => `<tr><td>${esc(name)}</td><td>${esc(model.reference_control)}</td><td>${esc(model.fill_model)}</td><td>${esc(model.equity)}</td><td>${esc(model.gross_inventory)}</td><td>${esc(model.net_inventory)}</td><td>${esc(model.fees)}</td><td>${esc(model.fills)}</td><td>${esc(model.max_drawdown)}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">No model rows yet.</td></tr>';
+      const active = (state.active_assets || [])[0] || Object.keys(latest)[0] || '';
+      document.getElementById('selected-asset').textContent = active || '—';
+      drawSourceDetail(state, active);
+      document.getElementById('details').textContent = JSON.stringify({status: state.status, errors: state.errors, classification: report && report.classification, blocker: report && report.primary_blocker}, null, 2);
+      return active;
     }
-    async function refresh() { try { draw(await (await fetch('/api/state', {cache: 'no-store'})).json()); } catch (error) { document.getElementById('details').textContent = String(error); } }
+    function drawChart(payload) {
+      const rows = (payload && payload.rows) || [];
+      const series = key => rows.map(row => num(row[key])).filter(v => v !== null);
+      const all = [...series('derive_mid'), ...series('fair_value')];
+      if (!all.length) { document.getElementById('derive-line').setAttribute('points',''); document.getElementById('fair-line').setAttribute('points',''); return; }
+      const lo = Math.min(...all), hi = Math.max(...all), span = hi - lo || 1;
+      const points = key => rows.map((row, i) => { const value = num(row[key]); return value === null ? null : `${(i / Math.max(1, rows.length - 1)) * 980 + 10},${245 - ((value - lo) / span) * 225}`; }).filter(Boolean).join(' ');
+      document.getElementById('derive-line').setAttribute('points', points('derive_mid'));
+      document.getElementById('fair-line').setAttribute('points', points('fair_value'));
+    }
+    function drawMinuteHistory(payload) {
+      const meta = document.getElementById('minute-history-meta');
+      if (!payload || !payload.available) {
+        meta.textContent = `Minute history unavailable for ${payload && payload.run ? payload.run : 'this run'}: ${(payload && payload.reason) || 'UNKNOWN'}. Latest and recent views remain available.`;
+        document.getElementById('minute-history').innerHTML = '<tr><td colspan="22" class="muted">No minute aggregates available.</td></tr>';
+        return;
+      }
+      meta.textContent = `Source: ${payload.source}; ${payload.rows.length} minute rows; 60-second aggregate history is shown without duplicating full tick history.`;
+      const rows = (payload.rows || []).map(row => `<tr><td>${esc(minuteText(row.timestamp_minute))}</td><td>${esc(row.observation_count)}</td><td>${esc(row.feature_snapshot_count)}</td><td>${esc(row.derive_mid)}</td><td>${esc(row.spread_bps)}</td><td>${esc(row.spread_bps_p90)}</td><td>${esc(row.reference_fair_value)}</td><td>${esc(row.basis_bps)}</td><td class="${statusClass(row.selected_reference)}">${esc(row.selected_reference || '—')}</td><td>${esc(row.quote_uptime_pct)}</td><td>${esc(row.creates)}</td><td>${esc(row.replaces)}</td><td>${esc(row.cancels)}</td><td>${esc(row.holds)}</td><td>${esc(row.blocks)}</td><td>${esc(row.derive_trades)}</td><td>${esc(row.conservative_fills)}</td><td>${esc(row.touch_fills)}</td><td>${esc(row.maker_volume)}</td><td>${esc(row.pnl_proxy_delta)}</td><td>${esc(row.error_count)}</td><td>${esc(`${row.decision_detail_count || 0} / ${row.decision_compressed_count || 0}`)}</td></tr>`).join('');
+      document.getElementById('minute-history').innerHTML = rows || '<tr><td colspan="22" class="muted">No minute rows in the selected window.</td></tr>';
+    }
+    function drawValidation6h(payload) {
+      const meta = {
+        run_id: payload.run_id,
+        status: payload.status,
+        state_status: payload.state_status,
+        runner_alive: payload.runner_alive,
+        runner_pid: payload.runner_pid,
+        last_update_age_seconds: payload.last_update_age_seconds,
+        data_basis: payload.data_basis,
+        aggregate_backed: payload.aggregate_backed,
+        aggregate_minutes: payload.aggregate_minutes,
+        aggregate_observations: payload.aggregate_observations,
+        elapsed_seconds: payload.elapsed_seconds,
+        remaining_seconds: payload.remaining_seconds,
+        start_time_utc: payload.start_time_utc,
+        planned_end_time_utc: payload.planned_end_time_utc,
+        mainnet_armed: payload.mainnet_armed,
+        real_orders: payload.real_orders,
+        real_positions: payload.real_positions,
+      };
+      document.getElementById('validation6h-meta').textContent = JSON.stringify(meta, null, 2);
+      const assets = payload.assets || [];
+      document.getElementById('validation6h-assets').innerHTML = assets.map(row => `<tr><td>${esc(row.asset)}</td><td>${esc(row.derive_mid)}</td><td>${esc(row.spread_bps)}</td><td>${esc(row.derive_trades_per_hour)}</td><td>${esc(row.trade_age_seconds)}</td><td class="${statusClass(row.current_reference)}">${esc(row.current_reference || 'PAUSE')}</td><td>${esc(row.reference_age_seconds)}</td><td>${esc(row.shadow_bid)}</td><td>${esc(row.shadow_ask)}</td><td>${esc(row.create_count)}</td><td>${esc(row.replace_count)}</td><td>${esc(row.cancel_count)}</td><td>${esc(row.conservative_fills)}</td><td>${esc(row.touch_fills)}</td><td>${esc(row.maker_volume_per_hour)}</td><td>${esc(row.markout_5s)}</td><td>${esc(row.markout_30s)}</td><td>${esc(row.markout_60s)}</td><td>${esc(row.net_capture)}</td><td>${esc(row.quote_uptime)}</td><td class="${statusClass(row.trade_feed_classification)}">${esc(row.trade_feed_classification)}</td></tr>`).join('') || '<tr><td colspan="21" class="muted">No six-hour rows yet.</td></tr>';
+      document.getElementById('validation6h-trades').innerHTML = assets.map(row => `<tr><td>${esc(row.asset)}</td><td class="${statusClass(row.trade_feed_classification)}">${esc(row.trade_feed_classification)}</td><td>${esc(row.derive_trades_per_hour)}</td><td>${esc(row.trade_notional_per_hour)}</td><td>${esc(row.trade_age_seconds)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No six-hour trade rows yet.</td></tr>';
+      const churn = payload.churn || [];
+      document.getElementById('validation6h-churn').innerHTML = churn.map(row => `<tr><td>${esc(row.asset)}</td><td>${esc(row.creates_per_min)}</td><td>${esc(row.replaces_per_min)}</td><td>${esc(row.cancels_per_min)}</td><td>${esc(row.actual_quote_mutations_per_min)}</td><td>${esc(row.max_mutations_rolling_60s)}</td><td>${esc(row.p90_mutations_per_min)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No six-hour churn rows yet.</td></tr>';
+      const reference = payload.reference || [];
+      document.getElementById('validation6h-reference').innerHTML = reference.map(row => `<tr><td>${esc(row.asset)}</td><td>${esc(row.binance_uptime)}</td><td>${esc(row.bybit_failover_time)}</td><td>${esc(row.okx_failover_time)}</td><td>${esc(row.source_switches)}</td><td>${esc(row.reference_pauses)}</td><td>${esc(row.disagreement_pauses)}</td><td class="${statusClass(row.current_reference)}">${esc(row.current_reference || 'PAUSE')}</td><td class="${statusClass(row.current_health)}">${esc(row.current_health || 'UNOBSERVED')}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">No six-hour reference rows yet.</td></tr>';
+    }
+    function drawRefreshResearch(payload) {
+      const final = (payload && payload.final) || {};
+      const audit = final.rate_limit_audit || {};
+      const denominators = final.evidence_denominators || {};
+      const runtime = (payload && payload.runtime_state) || {};
+      const activeUniverse = Array.isArray(runtime.active_assets) && runtime.active_assets.length ? runtime.active_assets : (final.active_universe || []);
+      document.getElementById('refresh-active-label').textContent = activeUniverse.join(' / ') || 'NO ACTIVE ASSETS';
+      document.getElementById('refresh-research-meta').textContent = JSON.stringify({
+        run_id: payload && payload.run_id,
+        status: final.status || (payload && payload.available ? 'REPORT_PARTIAL' : 'NOT_STARTED'),
+        classification: final.classification,
+        run_status: final.run_status,
+        active_universe: activeUniverse,
+        reference_path: final.reference_path || ['binance','bybit','okx','pause'],
+        bitget_enabled: final.bitget_enabled,
+        rate_limit_classification: audit.classification,
+        rate_limit_verified: audit.verified,
+        denominators: denominators,
+        panel_status: payload && payload.panel_status,
+        report_path: payload && payload.report_path,
+      }, null, 2);
+      const latest = runtime.latest_decisions || {};
+      const currentRows = activeUniverse.map(asset => {
+        const d = latest[asset] || {};
+        const bid = num(d.derive_bid), ask = num(d.derive_ask);
+        const mid = bid !== null && ask !== null ? (bid + ask) / 2 : null;
+        return `<tr><td>${esc(asset)}</td><td>${esc(mid)}</td><td class="${statusClass(d.selected_reference)}">${esc(d.selected_reference || 'PAUSE')}</td><td>${esc(d.reference_data_age_seconds)}</td><td>${esc(d.desired_bid)}</td><td>${esc(d.desired_ask)}</td><td>${esc(d.return_1s)}</td><td class="${statusClass(d.market_mode)}">${esc(d.market_mode)}</td><td>${esc(final.fast_adverse_move_override_enabled ?? runtime.fast_adverse_move_override_enabled ?? '—')}</td><td class="${statusClass(runtime.status)}">${esc(runtime.status || 'NO_RUNTIME')}</td></tr>`;
+      }).join('');
+      document.getElementById('refresh-current').innerHTML = currentRows || '<tr><td colspan="10" class="muted">No active-asset runtime snapshot yet.</td></tr>';
+      const rateRows = (payload && payload.rate_limit_utilization || []).filter(row => String(row.fill_model) === 'CONSERVATIVE' && String(row.deadband_bps) === '0' && String(row.minimum_residency_seconds) === '0');
+      document.getElementById('refresh-rate').innerHTML = rateRows.map(row => `<tr><td>${esc(row.asset)}</td><td>${esc(row.deadband_bps)}</td><td>${esc(row.minimum_residency_seconds)}</td><td>${esc(row.creates_per_minute)}</td><td>${esc(row.replacements_per_minute)}</td><td>${esc(row.cancels_per_minute)}</td><td>${esc(row.total_actions_per_minute)}</td><td>${esc(row.rolling_peak_1s)}</td><td>${esc(row.rolling_peak_10s)}</td><td>${esc(row.rolling_peak_60s)}</td><td>${esc(row.utilization_pct_average)}%</td><td>${esc(row.headroom_actions_per_second)}</td><td class="${statusClass(row.classification)}">${esc(row.classification)}</td></tr>`).join('') || '<tr><td colspan="13" class="muted">No rate-limit rows yet.</td></tr>';
+      const matrixRows = (payload && payload.matrix || []).filter(row => String(row.fill_model) === 'CONSERVATIVE');
+      document.getElementById('refresh-matrix').innerHTML = matrixRows.map(row => `<tr><td>${esc(row.asset)}</td><td>${esc(row.deadband_bps)}</td><td>${esc(row.minimum_residency_seconds)}</td><td>${esc(row.quotes)}</td><td>${esc(row.replacements_per_minute)}</td><td>${esc(row.median_lifetime_ms)}</td><td>${esc(row.queue_residency_proxy_median_ms)}</td><td>${esc(row.strict_crossings)}</td><td>${esc(row.conservative_fills)}</td><td>${esc(row.fills_per_hour)}</td><td>${esc(row.markout_30s_median_bps)}</td><td>${esc(row.markout_60s_median_bps)}</td><td>${esc(row.net_capture_30s_median_bps)}</td><td>${esc(row.net_capture_60s_median_bps)}</td><td class="${statusClass(row.rate_classification)}">${esc(row.rate_classification)}</td><td>${esc(row.stale_exposure_seconds)}</td><td class="${statusClass(row.status)}">${esc(row.status)}</td></tr>`).join('') || '<tr><td colspan="17" class="muted">No deadband/residency rows yet.</td></tr>';
+      const recommendations = (payload && payload.recommendations) || [];
+      document.getElementById('refresh-assets').innerHTML = recommendations.map(row => `<tr><td>${esc(row.asset)}</td><td class="${statusClass(row.decision)}">${esc(row.decision)}</td><td>${esc(row.recommendation)}</td><td>${esc(row.best_deadband_bps)}</td><td>${esc(row.best_minimum_residency_seconds)}</td><td>${esc(row.trade_count_denominator)}</td><td>${esc(row.conservative_fill_denominator)}</td><td>${esc(row.markout_30s_denominator)}</td><td>${esc(row.markout_60s_denominator)}</td><td>${esc(row.live_auto_apply)}</td></tr>`).join('') || '<tr><td colspan="10" class="muted">No recommendation rows yet.</td></tr>';
+    }
+    function drawAccountingRepair(payload) {
+      const summary = (payload && payload.summary) || {};
+      const assets = summary.active_assets || [];
+      document.getElementById('accounting-active-label').textContent = assets.join(' / ') || 'NO ACTIVE ASSETS';
+      const tests = summary.tests || {};
+      const testStatus = Object.fromEntries(Object.entries(tests).map(([name, value]) => [name, value && value.status]));
+      document.getElementById('accounting-repair-meta').textContent = JSON.stringify({
+        run_id: payload && payload.run_id,
+        current_context_run_id: payload && payload.current_context_run_id,
+        panel_status: payload && payload.panel_status,
+        repair_status: summary.status,
+        run_status: summary.run_status,
+        quote_id_status: summary.quote_id_status,
+        canonical_fills: summary.denominators && summary.denominators.canonical_fills,
+        canonical_notional_usdc: summary.denominators && summary.denominators.canonical_notional_usdc,
+        complete_markouts: summary.denominators && summary.denominators.complete_markouts,
+        mainnet_armed: summary.mainnet_armed,
+        real_orders: summary.real_orders,
+        real_positions: summary.real_positions,
+        required_tests: testStatus,
+      }, null, 2);
+      const rows = (payload && payload.asset_rows) || [];
+      document.getElementById('accounting-repair').innerHTML = rows.map(row => `<tr><td>${esc(row.asset)}</td><td>${esc(row.model)}</td><td>${esc(row.fill_model)}</td><td>${esc(row.fills)}</td><td>${esc(row.canonical_volume_usdc)}</td><td>${esc(row.markout_60s_complete)}</td><td>${esc(row.markout_60s_missing)}</td><td>${esc(row.net_capture_60s_samples)}</td><td>${esc(row.net_capture_60s_bps)}</td><td class="${statusClass(row.net_capture_60s_status)}">${esc(row.net_capture_60s_status)}</td><td>${esc(row.equity_usdc)}</td><td class="${statusClass(row.equity_status)}">${esc(row.equity_status)}</td><td>${esc(row.drawdown_usdc)}</td><td>${esc(row.drawdown_pct)}</td></tr>`).join('') || '<tr><td colspan="14" class="muted">No accounting repair rows yet.</td></tr>';
+    }
+    async function refresh() {
+      try {
+        const [state, report, validation6h, diagnostic, refreshResearch, accountingRepair] = await Promise.all([fetch('/api/state', {cache:'no-store'}).then(r => r.json()), fetch('/api/report', {cache:'no-store'}).then(r => r.json()), fetch('/api/validation6h', {cache:'no-store'}).then(r => r.json()), fetch('/api/quote-fill-diagnostic', {cache:'no-store'}).then(r => r.json()), fetch('/api/refresh-research', {cache:'no-store'}).then(r => r.json()), fetch('/api/accounting-repair', {cache:'no-store'}).then(r => r.json())]);
+        drawValidation6h(validation6h);
+        drawQuoteFillDiagnostic(diagnostic);
+        drawRefreshResearch(refreshResearch);
+        drawAccountingRepair(accountingRepair);
+        const asset = draw(state, report);
+        const [chart, minuteHistory] = await Promise.all([
+          fetch('/api/timeseries?asset=' + encodeURIComponent(asset) + '&window=' + selectedWindowSeconds, {cache:'no-store'}).then(r => r.json()),
+          fetch('/api/minute-aggregates?asset=' + encodeURIComponent(asset) + '&run=validation6h&window=3600', {cache:'no-store'}).then(r => r.json()),
+        ]);
+        drawChart(chart);
+        drawMinuteHistory(minuteHistory);
+      } catch (error) { document.getElementById('details').textContent = String(error); }
+    }
+    document.querySelectorAll('[data-window]').forEach(control => {
+      const selectWindow = () => { selectedWindowSeconds = Number(control.dataset.window); refresh(); };
+      control.addEventListener('click', selectWindow);
+      control.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectWindow(); } });
+    });
     refresh(); setInterval(refresh, 1000);
   </script>
 </body>

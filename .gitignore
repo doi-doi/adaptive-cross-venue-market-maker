@@ -6,10 +6,25 @@ __pycache__/
 *.py[cod]
 .DS_Store
 
+# Runtime telemetry and generated research artifacts stay local. They can
+# contain large archives and run-specific operational data; source/config/docs
+# remain versioned below.
+logs/*
+!logs/mainnet_shadow/
 logs/mainnet_shadow/*
 !logs/mainnet_shadow/.gitkeep
+
+reports/*
+!reports/mainnet_shadow/
 reports/mainnet_shadow/*
 !reports/mainnet_shadow/.gitkeep
+
+!logs/multi_reference_shadow/
+logs/multi_reference_shadow/*
+!logs/multi_reference_shadow/.gitkeep
+!reports/multi_reference_shadow/
+reports/multi_reference_shadow/*
+!reports/multi_reference_shadow/.gitkeep
 
 *.sqlite
 *.sqlite-shm

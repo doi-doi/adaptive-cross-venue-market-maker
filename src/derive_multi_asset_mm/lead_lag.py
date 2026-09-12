@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Iterable
 from decimal import Decimal
 from math import sqrt
@@ -11,8 +12,18 @@ PricePoint: TypeAlias = tuple[float, Decimal]
 
 
 def _nearest(points: list[PricePoint], target: float, tolerance_seconds: float) -> PricePoint | None:
-    candidates = [point for point in points if abs(point[0] - target) <= tolerance_seconds]
-    return min(candidates, key=lambda point: abs(point[0] - target)) if candidates else None
+    """Return the nearest observed point without interpolating or forward filling."""
+
+    if not points:
+        return None
+    insertion = bisect_left(points, (target, Decimal("-Infinity")))
+    candidates = []
+    if insertion < len(points):
+        candidates.append(points[insertion])
+    if insertion > 0:
+        candidates.append(points[insertion - 1])
+    nearest = min(candidates, key=lambda point: abs(point[0] - target))
+    return nearest if abs(nearest[0] - target) <= tolerance_seconds else None
 
 
 def _return(start: Decimal, end: Decimal) -> float | None:
@@ -38,13 +49,13 @@ def estimate_lead_lag(
     reference_points: Iterable[PricePoint],
     derive_points: Iterable[PricePoint],
     *,
-    lags_seconds: tuple[int, ...] = (1, 5, 15, 30, 60),
-    return_horizon_seconds: int = 1,
+    lags_seconds: tuple[float, ...] = (0.1, 0.25, 0.5, 1, 2, 5),
+    return_horizon_seconds: float = 1,
     tolerance_seconds: float = 0.35,
 ) -> list[dict[str, object]]:
     """Compare same-horizon returns at explicit time offsets.
 
-    A row at lag ``k`` compares a Binance return starting at ``t`` with a Derive
+    A row at lag ``k`` compares a reference return starting at ``t`` with a Derive
     return starting at ``t + k``. Only observed points within the declared
     tolerance are paired; missing observations are omitted rather than filled.
     """

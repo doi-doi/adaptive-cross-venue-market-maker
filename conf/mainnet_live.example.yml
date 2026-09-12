@@ -6,13 +6,25 @@ dry_run: false
 mainnet_armed: true
 derive_connector: derive_perpetual
 binance_connector: binance_perpetual
+reference_connectors: [binance_perpetual, bybit_perpetual, okx_perpetual, bitget_perpetual]
+multi_reference: false
+reference_selection_mode: PRIORITY_FAILOVER
+reference_priority: [binance, bybit, okx]
+bitget_primary_enabled: false
+recovery_min_healthy_seconds: 3
+reference_healthy_seconds: 2
+reference_stale_seconds: 5
+minimum_reference_sources: 1
+reference_outlier_bps: 50
+reference_disagreement_pause_bps: 25
 capital_usdc: 800
-max_active_assets: 4
+max_active_assets: 3
 order_size_multiplier: 1
 maker_fee_bps: 1
 fair_value_mid_weight: 0.5
 fair_value_microprice_weight: 0.5
 basis_window: 120
+basis_ewma_alpha: 0.2
 basis_max_deviation_bps: 50
 min_edge_bps: 4
 volatility_buffer: 2
@@ -24,7 +36,9 @@ inventory_skew_max_bps: 12
 portfolio_skew_max_bps: 4
 bbo_stale_seconds: 5
 reference_stale_seconds: 5
-refresh_tolerance_bps: 3
+# Refresh only when the active quote is strictly more than 2% (200 bps) from
+# the current causal Derive midpoint. Quote age is not a normal refresh trigger.
+refresh_tolerance_bps: 200
 quote_max_age_seconds: 30
 max_single_order_notional: 120
 max_open_order_notional: 400
@@ -41,10 +55,9 @@ aggressive_spread_max_bps: 15
 defensive_spread_min_bps: 3
 fast_move_threshold_bps: 8
 assets:
+  DOGE: {enabled: true}
   ADA: {enabled: true}
-  CC: {enabled: true}
   XRP: {enabled: true}
-  SOL: {enabled: true}
 report_dir: reports/mainnet_shadow
 log_dir: logs/mainnet_shadow
 database_path: logs/mainnet_shadow/telemetry.sqlite

@@ -29,7 +29,11 @@ def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
 
 
 class DerivePublicClient:
-    ALLOWED_METHODS = {"public/get_all_instruments", "public/get_tickers"}
+    ALLOWED_METHODS = {
+        "public/get_all_instruments",
+        "public/get_tickers",
+        "public/get_trade_history",
+    }
 
     def __init__(self, base_url: str, timeout_seconds: float = 20.0) -> None:
         if not base_url.startswith("https://"):
@@ -97,6 +101,55 @@ class DerivePublicClient:
                     normalized[name] = inner
         return normalized
 
+    def trade_history(
+        self,
+        instrument_name: str,
+        *,
+        from_timestamp_ms: int | None = None,
+        to_timestamp_ms: int | None = None,
+        page_size: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Fetch public Derive executions for one instrument.
+
+        The endpoint returns both sides of a matched trade. Callers that use
+        these rows as aggressor evidence must retain only the ``taker`` side.
+        """
+
+        instrument = str(instrument_name).strip().upper()
+        if not instrument:
+            raise PublicDataError("public/get_trade_history requires an instrument name")
+        size = max(1, min(int(page_size), 1000))
+        params: dict[str, Any] = {
+            "instrument_name": instrument,
+            "page": 1,
+            "page_size": size,
+        }
+        if from_timestamp_ms is not None:
+            params["from_timestamp"] = int(from_timestamp_ms)
+        if to_timestamp_ms is not None:
+            params["to_timestamp"] = int(to_timestamp_ms)
+
+        rows: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            params["page"] = page
+            result = self.post("public/get_trade_history", params)
+            if isinstance(result, list):
+                page_rows = result
+                pages = page
+            elif isinstance(result, dict):
+                raw_rows = result.get("trades", result.get("data", []))
+                page_rows = raw_rows if isinstance(raw_rows, list) else []
+                pagination = result.get("pagination")
+                pages = int(pagination.get("num_pages", page)) if isinstance(pagination, dict) else page
+            else:
+                raise PublicDataError("public/get_trade_history has no trade list")
+            rows.extend(row for row in page_rows if isinstance(row, dict))
+            if page >= pages or not page_rows:
+                break
+            page += 1
+        return rows
+
 
 class BinancePublicClient:
     def __init__(self, exchange_info_url: str, timeout_seconds: float = 20.0) -> None:
@@ -149,8 +202,12 @@ def _rules_from_row(row: dict[str, Any], ticker: dict[str, Any] | None) -> Deriv
     )
 
 
-def discover_mappings(config: RuntimeConfig) -> tuple[dict[str, AssetMapping], dict[str, Any]]:
-    """Validate only exact active Derive instruments and exact Binance USD-M perps."""
+def discover_mappings(
+    config: RuntimeConfig,
+    *,
+    require_binance_reference: bool = True,
+) -> tuple[dict[str, AssetMapping], dict[str, Any]]:
+    """Validate exact active Derive instruments and optionally Binance USD-M perps."""
 
     derive_rows: list[dict[str, Any]] = []
     binance_rows: list[dict[str, Any]] = []
@@ -198,10 +255,19 @@ def discover_mappings(config: RuntimeConfig) -> tuple[dict[str, AssetMapping], d
         if not rules.valid():
             mappings[symbol] = AssetMapping(symbol, derive_instrument, derive_pair, binance_symbol, valid=False, reason="DERIVE_RULES_UNAVAILABLE", rules=rules)
             continue
-        if binance_symbol not in binance_by_symbol:
+        if require_binance_reference and binance_symbol not in binance_by_symbol:
             mappings[symbol] = AssetMapping(symbol, derive_instrument, derive_pair, binance_symbol, valid=False, reason="REFERENCE_MARKET_UNAVAILABLE", rules=rules)
             continue
-        mappings[symbol] = AssetMapping(symbol, derive_instrument, derive_pair, binance_symbol, reference_available=True, valid=True, reason="READY", rules=rules)
+        mappings[symbol] = AssetMapping(
+            symbol,
+            derive_instrument,
+            derive_pair,
+            binance_symbol,
+            reference_available=binance_symbol in binance_by_symbol,
+            valid=True,
+            reason="READY" if binance_symbol in binance_by_symbol else "READY_WITHOUT_BINANCE",
+            rules=rules,
+        )
     report = {
         "observed_at": time.time(),
         "derive_instrument_count": len(derive_rows),
@@ -304,6 +370,25 @@ def parse_trade_message(payload: dict[str, Any], *, source: str, receipt_timesta
         return None
     event_timestamp = float(event / Decimal("1000")) if event > Decimal("10000000000") else float(event)
     return key, TradePrint(receipt, price, amount, side, trade_id, event_timestamp, source)
+
+
+def parse_trade_history_row(
+    row: dict[str, Any], *, receipt_timestamp: float | None = None
+) -> tuple[str, TradePrint] | None:
+    """Normalize one REST history row as a Derive aggressor print.
+
+    Public history contains maker and taker rows for a matched execution. A
+    maker row is deliberately rejected because only the taker direction is a
+    valid aggressor signal for the conservative fill contract.
+    """
+
+    if not isinstance(row, dict) or str(row.get("liquidity_role", "")).strip().lower() != "taker":
+        return None
+    return parse_trade_message(
+        {"params": {"data": [row]}},
+        source="derive",
+        receipt_timestamp=receipt_timestamp,
+    )
 
 
 def subscriptions(mappings: dict[str, AssetMapping]) -> tuple[list[str], list[str]]:

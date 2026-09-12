@@ -60,15 +60,18 @@ async def main() -> None:
     config = DeriveMultiAssetBinanceMMConfig(
         id="contract_probe",
         controller_name="derive_multi_asset_binance_reference_mm",
-        assets=["ADA", "CC"],
-        max_active_assets=2,
+        assets=["DOGE", "ADA", "XRP"],
+        max_active_assets=3,
     )
     controller = DeriveMultiAssetBinanceMMController(config, _Provider(), asyncio.Queue())
     await controller.update_processed_data()
     actions = controller.determine_executor_actions()
     if actions:
         raise AssertionError(f"shadow contract emitted actions: {actions}")
-    print(f"mode={config.mode} assets={sorted(controller.processed_data)} actions={len(actions)}")
+    controls = {row.get("reference_control") for row in controller.processed_data.values()}
+    if controls != {"PRIORITY_FAILOVER"}:
+        raise AssertionError(f"priority control not active: {controls}")
+    print(f"mode={config.mode} assets={sorted(controller.processed_data)} priority={config.reference_priority} actions={len(actions)}")
     print(controller.to_format_status()[0])
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum, StrEnum
 from typing import Any
@@ -47,6 +47,16 @@ class InventoryMode(StrEnum):
 class QuotePlacement(StrEnum):
     AT_TOUCH = "AT_TOUCH"
     IMPROVE_BY_ONE_TICK = "IMPROVE_BY_ONE_TICK"
+
+
+class ReferenceControl(StrEnum):
+    """Fair-value controls compared against the same Derive observations."""
+
+    DERIVE_ONLY = "DERIVE_ONLY"
+    BINANCE_ONLY_REFERENCE = "BINANCE_ONLY_REFERENCE"
+    BINANCE_ONLY_NO_FAILOVER = "BINANCE_ONLY_NO_FAILOVER"
+    PRIORITY_FAILOVER = "PRIORITY_FAILOVER"
+    MULTI_SOURCE_CONSENSUS = "MULTI_SOURCE_CONSENSUS"
 
 
 class Side(StrEnum):
@@ -137,6 +147,30 @@ class AssetSpec:
 
 
 @dataclass(frozen=True)
+class ReferenceMarket:
+    """An exact, currently validated public market for one reference venue."""
+
+    asset: str
+    venue: str
+    connector: str
+    symbol: str | None
+    status: str
+    reason: str = ""
+    contract_type: str = "perpetual"
+    underlying: str | None = None
+    quote: str = "USDT"
+    amount_multiplier: Decimal = Decimal("1")
+    tick_size: Decimal | None = None
+    amount_step: Decimal | None = None
+    minimum_amount: Decimal | None = None
+    minimum_notional: Decimal | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.status == "READY" and bool(self.symbol)
+
+
+@dataclass(frozen=True)
 class AssetMapping:
     asset: str
     derive_instrument: str | None
@@ -147,6 +181,7 @@ class AssetMapping:
     valid: bool = False
     reason: str = "UNVALIDATED"
     rules: DeriveRules | None = None
+    reference_markets: tuple[ReferenceMarket, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -158,6 +193,46 @@ class FairValue:
     baseline_basis_bps: Decimal
     basis_bps: Decimal
     derive_fair_value: Decimal
+    ewma_basis_bps: Decimal = ZERO
+    source_fair_values: dict[str, Decimal] = field(default_factory=dict)
+    source_mids: dict[str, Decimal] = field(default_factory=dict)
+    valid_sources: tuple[str, ...] = ()
+    outliers: tuple[str, ...] = ()
+    dispersion_bps: Decimal | None = None
+    confidence: str = "PAUSED"
+    pause_reason: str = ""
+    reference_control: str = "BINANCE_ONLY_REFERENCE"
+
+
+@dataclass(frozen=True)
+class SourceFairValue:
+    venue: str
+    fair_value: Decimal
+    mid: Decimal
+    microprice: Decimal
+    imbalance: Decimal
+    timestamp: float
+    age_seconds: Decimal
+    health: str
+    deviation_bps: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class ConsensusReference:
+    """Robust multi-source reference decision at one causal timestamp."""
+
+    fair_value: Decimal | None
+    robust_median: Decimal | None
+    source_values: tuple[SourceFairValue, ...]
+    valid_sources: tuple[str, ...]
+    outliers: tuple[str, ...]
+    dispersion_bps: Decimal | None
+    confidence: str
+    pause_reason: str = ""
+
+    @property
+    def source_count(self) -> int:
+        return len(self.valid_sources)
 
 
 @dataclass(frozen=True)
@@ -251,6 +326,7 @@ class FillRecord:
     basis_bps: Decimal
     quoted_edge_bps: Decimal
     model: str
+    reference_control: str = "BINANCE_ONLY_REFERENCE"
 
 
 @dataclass(frozen=True)
@@ -264,6 +340,7 @@ class MarkoutRecord:
     binance_markout_bps: Decimal
     derive_markout_bps: Decimal
     model: str
+    reference_control: str = "BINANCE_ONLY_REFERENCE"
 
 
 @dataclass

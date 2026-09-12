@@ -1,0 +1,70 @@
+# Historical eight-asset consensus configuration retained for reproducibility.
+# New runs must use conf/mainnet_shadow.yml.
+mode: MAINNET_SHADOW
+dry_run: true
+mainnet_armed: false
+
+derive_connector: derive_perpetual
+binance_connector: binance_perpetual
+derive_public_url: https://api.lyra.finance
+derive_websocket_url: wss://api.lyra.finance/ws
+binance_exchange_info_url: https://fapi.binance.com/fapi/v1/exchangeInfo
+binance_websocket_url: wss://fstream.binance.com/stream
+
+multi_reference: true
+reference_selection_mode: LEGACY
+reference_venues: [binance, bybit, okx, bitget]
+minimum_reference_sources: 2
+reference_healthy_seconds: 2
+reference_outlier_bps: 50
+reference_disagreement_pause_bps: 25
+
+capital_usdc: 800
+max_active_assets: 8
+order_size_multiplier: 1
+maker_fee_bps: 1
+fair_value_mid_weight: 0.5
+fair_value_microprice_weight: 0.5
+basis_window: 120
+basis_ewma_alpha: 0.2
+basis_max_deviation_bps: 50
+min_edge_bps: 4
+volatility_buffer: 2
+latency_buffer: 1
+toxicity_buffer: 1
+minimum_profit_buffer: 1
+directional_skew_max_bps: 2
+inventory_skew_max_bps: 12
+portfolio_skew_max_bps: 4
+bbo_stale_seconds: 5
+reference_stale_seconds: 5
+refresh_tolerance_bps: 3
+quote_max_age_seconds: 30
+max_single_order_notional: 120
+max_open_order_notional: 400
+max_inventory_per_asset: 200
+max_portfolio_inventory: 400
+max_drawdown: 40
+max_actions_per_minute: 30
+quote_placement: AT_TOUCH
+max_book_levels: 5
+direction_threshold_bps: 1
+high_vol_threshold_bps: 8
+extreme_vol_threshold_bps: 20
+aggressive_spread_max_bps: 15
+defensive_spread_min_bps: 3
+fast_move_threshold_bps: 8
+
+assets:
+  ADA: {enabled: true, order_size_multiplier: 1}
+  CC: {enabled: true, order_size_multiplier: 1}
+  XRP: {enabled: true, order_size_multiplier: 1}
+  SOL: {enabled: true, order_size_multiplier: 1}
+  LINK: {enabled: true, order_size_multiplier: 1}
+  DOGE: {enabled: true, order_size_multiplier: 1}
+  BNB: {enabled: true, order_size_multiplier: 1}
+  HYPE: {enabled: true, order_size_multiplier: 1}
+
+report_dir: reports/multi_reference_shadow
+log_dir: logs/multi_reference_shadow
+database_path: logs/multi_reference_shadow/telemetry.sqlite
