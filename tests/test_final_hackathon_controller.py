@@ -223,6 +223,8 @@ def test_binance_and_derive_staleness_pause_independently():
     asyncio.run(instance.update_processed_data())
     assert instance.processed_data["operational_state"] == "REFERENCE_PAUSED"
     assert instance.processed_data["block_reason"] == "BINANCE_STALE"
+    assert instance.processed_data["desired_bid"] is None
+    assert instance.processed_data["desired_ask"] is None
 
     instance, provider = native_controller(binance_stale_seconds=1, derive_stale_seconds=1)
     asyncio.run(instance.update_processed_data())
@@ -268,6 +270,52 @@ def test_kill_switch_cancel_bypasses_exhausted_churn_budget():
     actions = instance.determine_executor_actions()
     assert len(actions) == 1
     assert isinstance(actions[0], StopExecutorAction)
+
+
+def test_duplicate_or_unknown_levels_are_cancelled_before_new_creates():
+    instance, _ = native_controller(shadow_mode=False, mainnet_armed=True)
+    instance.executors_info = [
+        types.SimpleNamespace(
+            id=executor_id,
+            is_active=True,
+            timestamp=1,
+            config=types.SimpleNamespace(level_id=level, price=Decimal("0.49"), amount=Decimal("10")),
+        )
+        for executor_id, level in (("bid-1", "bid"), ("bid-2", "bid"), ("rogue-1", "grid_0"))
+    ]
+    actions = instance.determine_executor_actions()
+    assert {action.executor_id for action in actions} == {"bid-2", "rogue-1"}
+    assert all(isinstance(action, StopExecutorAction) for action in actions)
+
+
+def test_native_fill_markouts_are_unavailable_until_horizon_then_measured():
+    instance, provider = native_controller(binance_stale_seconds=120, derive_stale_seconds=120)
+    instance.executors_info = [
+        types.SimpleNamespace(
+            id="fill-1",
+            is_active=False,
+            is_done=True,
+            filled_amount_quote=Decimal("10"),
+            net_pnl_quote=Decimal("0"),
+            timestamp=provider.now,
+            config=types.SimpleNamespace(level_id="bid", side=TradeType.BUY, price=Decimal("0.5"), amount=Decimal("20")),
+            custom_info={
+                "executed_amount_base": Decimal("20"),
+                "average_executed_price": Decimal("0.5"),
+                "order_last_update": provider.now,
+            },
+        )
+    ]
+    asyncio.run(instance.update_processed_data())
+    assert instance.get_custom_info()["markout_30s_bps"] is None
+    provider.now += 30
+    provider.books["derive_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual"].last_diff_uid += 1
+    provider.books["derive_perpetual"].bid.price = Decimal("0.51")
+    provider.books["derive_perpetual"].ask.price = Decimal("0.511")
+    asyncio.run(instance.update_processed_data())
+    assert instance.get_custom_info()["markout_30s_bps"] > 0
+    assert instance.get_custom_info()["markout_60s_bps"] is None
 
 
 @pytest.mark.parametrize(
@@ -345,8 +393,32 @@ def test_refresh_deadband_residency_tick_hold_and_adverse_override():
 def test_shared_800_capital_defaults_cover_two_assets():
     xrp, link = config("XRP"), config("LINK")
     assert xrp.portfolio_capital_quote == link.portfolio_capital_quote == Decimal("800")
+    assert xrp.total_amount_quote == link.total_amount_quote == Decimal("800")
     assert xrp.asset_cap_quote + link.asset_cap_quote <= xrp.portfolio_capital_quote - xrp.reserve_quote
     assert xrp.order_amount_quote * 2 <= xrp.max_asset_open_order_quote
+
+
+def test_shared_portfolio_rejects_inconsistent_terms_and_excess_asset_caps():
+    portfolio_id = "test_inconsistent_terms"
+    native_controller(portfolio_id=portfolio_id, asset_cap_quote=Decimal("300"))
+    with pytest.raises(ValueError, match="identical capital and reserve"):
+        native_controller(
+            portfolio_id=portfolio_id,
+            portfolio_capital_quote=Decimal("900"),
+            total_amount_quote=Decimal("900"),
+        )
+
+    portfolio_id = "test_excess_caps"
+    native_controller(portfolio_id=portfolio_id, asset_cap_quote=Decimal("350"))
+    provider = Provider()
+    link_config = config(
+        "LINK",
+        portfolio_id=portfolio_id,
+        asset_cap_quote=Decimal("300"),
+        max_asset_inventory_quote=Decimal("180"),
+    )
+    with pytest.raises(ValueError, match="shared asset caps"):
+        controller.DeriveBinanceAdaptiveMM(link_config, provider, asyncio.Queue())
 
 
 def test_committed_xrp_and_link_configs_are_shadow_only_and_share_one_portfolio():

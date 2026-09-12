@@ -182,6 +182,7 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
     mainnet_armed: bool = Field(default=False)
     manual_kill_switch: bool = Field(default=False)
 
+    total_amount_quote: Decimal = Field(default=Decimal("800"), gt=0)
     portfolio_capital_quote: Decimal = Field(default=Decimal("800"), gt=0)
     reserve_quote: Decimal = Field(default=Decimal("200"), ge=0)
     asset_cap_quote: Decimal = Field(default=Decimal("300"), gt=0)
@@ -238,6 +239,8 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
             raise ValueError("Derive supports ONEWAY position mode only")
         if self.mainnet_armed and self.shadow_mode:
             raise ValueError("mainnet_armed requires shadow_mode=false")
+        if self.total_amount_quote != self.portfolio_capital_quote:
+            raise ValueError("native total_amount_quote must equal portfolio_capital_quote")
         usable = self.portfolio_capital_quote - self.reserve_quote
         if usable <= ZERO or self.asset_cap_quote > usable:
             raise ValueError("asset cap must fit inside capital after reserve")
@@ -264,6 +267,8 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
 
     _logger = None
     _portfolio: ClassVar[dict[str, dict[str, tuple[Decimal, Decimal]]]] = {}
+    _portfolio_caps: ClassVar[dict[str, dict[str, Decimal]]] = {}
+    _portfolio_terms: ClassVar[dict[str, tuple[Decimal, Decimal]]] = {}
 
     @classmethod
     def logger(cls):
@@ -290,8 +295,21 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         self._action_timestamps: deque[float] = deque()
         self._action_events: deque[tuple[float, str]] = deque()
         self._pending_stops: set[str] = set()
+        self._unexpected_active: list[Any] = []
         self._last_action: dict[str, str] = {"bid": "NONE", "ask": "NONE"}
+        self._fill_observations: dict[str, dict[str, Any]] = {}
+        self._markout_30s: list[Decimal] = []
+        self._markout_60s: list[Decimal] = []
+        self._peak_pnl = ZERO
         self._started_at = self.market_data_provider.time()
+        terms = (config.portfolio_capital_quote, config.reserve_quote)
+        existing_terms = self._portfolio_terms.setdefault(config.portfolio_id, terms)
+        if existing_terms != terms:
+            raise ValueError("controllers sharing a portfolio_id must use identical capital and reserve")
+        caps = self._portfolio_caps.setdefault(config.portfolio_id, {})
+        caps[config.asset] = config.asset_cap_quote
+        if sum(caps.values(), ZERO) > config.portfolio_capital_quote - config.reserve_quote:
+            raise ValueError("shared asset caps exceed portfolio capital after reserve")
 
     def _read_book(self, connector: str, pair: str, now: float) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal, bool]:
         book = self.market_data_provider.get_order_book(connector, pair)
@@ -326,12 +344,15 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
 
     def _active(self) -> dict[str, Any]:
         result = {}
+        self._unexpected_active = []
         for executor in self.executors_info:
             if not bool(getattr(executor, "is_active", False)):
                 continue
             level = str(getattr(getattr(executor, "config", None), "level_id", ""))
-            if level in {"bid", "ask"}:
+            if level in {"bid", "ask"} and level not in result:
                 result[level] = executor
+            else:
+                self._unexpected_active.append(executor)
         return result
 
     def _mutations_last_minute(self, now: float) -> int:
@@ -351,6 +372,57 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             sum((abs(position) for position, _ in values.values()), ZERO),
             sum((orders for _, orders in values.values()), ZERO),
         )
+
+    def _publish_portfolio(self, position_notional: Decimal, open_order_notional: Decimal) -> None:
+        self._portfolio.setdefault(self.config.portfolio_id, {})[self.config.asset] = (
+            position_notional,
+            open_order_notional,
+        )
+
+    def _update_markouts(self, now: float, derive_mid: Decimal) -> tuple[Decimal | None, Decimal | None]:
+        for executor in self.executors_info:
+            executor_id = str(getattr(executor, "id", ""))
+            custom = getattr(executor, "custom_info", {}) or {}
+            filled_base = Decimal(str(custom.get("executed_amount_base", ZERO) or ZERO))
+            fill_price = Decimal(str(custom.get("average_executed_price", ZERO) or ZERO))
+            if not executor_id or filled_base <= ZERO or fill_price <= ZERO:
+                continue
+            previous = self._fill_observations.get(executor_id)
+            if previous is None or filled_base > previous["filled_base"]:
+                update_time = custom.get("order_last_update")
+                try:
+                    fill_time = float(update_time)
+                except (TypeError, ValueError):
+                    fill_time = now
+                if fill_time <= 0 or fill_time > now + 60:
+                    fill_time = now
+                self._fill_observations[executor_id] = {
+                    "filled_base": filled_base,
+                    "fill_price": fill_price,
+                    "fill_time": fill_time,
+                    "side": getattr(getattr(executor, "config", None), "side", None),
+                    "done_30": False,
+                    "done_60": False,
+                }
+        for observation in self._fill_observations.values():
+            age = now - observation["fill_time"]
+            side = observation["side"]
+            fill_price = observation["fill_price"]
+            if side == TradeType.BUY:
+                markout = (derive_mid / fill_price - ONE) * BPS
+            elif side == TradeType.SELL:
+                markout = (fill_price / derive_mid - ONE) * BPS
+            else:
+                continue
+            if age >= 30 and not observation["done_30"]:
+                self._markout_30s.append(markout)
+                observation["done_30"] = True
+            if age >= 60 and not observation["done_60"]:
+                self._markout_60s.append(markout)
+                observation["done_60"] = True
+        markout_30 = sum(self._markout_30s, ZERO) / len(self._markout_30s) if self._markout_30s else None
+        markout_60 = sum(self._markout_60s, ZERO) / len(self._markout_60s) if self._markout_60s else None
+        return markout_30, markout_60
 
     async def update_processed_data(self):
         now = self.market_data_provider.time()
@@ -458,8 +530,9 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 * Decimal(str(getattr(getattr(item, "config", None), "price", ZERO)))
                 for item in self._active().values()
             )
-            self._portfolio.setdefault(self.config.portfolio_id, {})[self.config.asset] = (position_notional, active_notional)
+            self._publish_portfolio(position_notional, active_notional)
             total_inventory, total_orders = self._portfolio_totals()
+            markout_30, markout_60 = self._update_markouts(now, derive_mid)
             if total_inventory > self.config.max_total_inventory_quote or total_orders > self.config.max_total_open_order_quote:
                 operational = OperationalState.RISK_PAUSED
                 self._plan = QuotePlan(None, None, amount, fair, self._market_state, MMMode.PAUSED, inventory_mode, "PORTFOLIO_LIMIT")
@@ -489,16 +562,26 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "fast_move_bps": self._fast_move_bps,
                 "portfolio_inventory": total_inventory,
                 "portfolio_open_orders": total_orders,
+                "markout_30s_bps": markout_30,
+                "markout_60s_bps": markout_60,
                 "block_reason": self._plan.reason,
                 "updated_at": now,
             }
         except Exception as exc:
+            if operational not in {
+                OperationalState.REFERENCE_PAUSED,
+                OperationalState.DERIVE_PAUSED,
+                OperationalState.RISK_PAUSED,
+            }:
+                operational = OperationalState.ERROR
             self._plan = None
             self.processed_data.update(
                 {
                     "asset": self.config.asset,
                     "operational_state": operational.value,
                     "mm_mode": MMMode.PAUSED.value,
+                    "desired_bid": None,
+                    "desired_ask": None,
                     "block_reason": str(exc),
                     "updated_at": now,
                 }
@@ -518,7 +601,20 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
     def determine_executor_actions(self) -> list[ExecutorAction]:
         now = self.market_data_provider.time()
         active = self._active()
+        active_notional = sum(
+            Decimal(str(getattr(getattr(item, "config", None), "amount", ZERO)))
+            * Decimal(str(getattr(getattr(item, "config", None), "price", ZERO)))
+            for item in active.values()
+        )
+        position_notional = Decimal(str(self.processed_data.get("position_notional", ZERO) or ZERO))
+        self._publish_portfolio(position_notional, active_notional)
         actions: list[ExecutorAction] = []
+        for executor in self._unexpected_active:
+            action = self._stop(executor, now, "UNEXPECTED_OR_DUPLICATE_EXECUTOR")
+            if action:
+                actions.append(action)
+        if actions:
+            return actions
         armed = not self.config.shadow_mode and self.config.mainnet_armed and not self.config.manual_kill_switch
         if not armed or self._plan is None or self._plan.mm_mode == MMMode.PAUSED:
             for executor in active.values():
@@ -565,11 +661,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         if actions:
             return actions
 
-        active_notional = sum(
-            Decimal(str(getattr(getattr(item, "config", None), "amount", ZERO)))
-            * Decimal(str(getattr(getattr(item, "config", None), "price", ZERO)))
-            for item in active.values()
-        )
         for level, (side, price) in desired.items():
             if level in active or price is None:
                 continue
@@ -601,12 +692,15 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             self._record_mutation(now, "create")
             self._last_action[level] = "CREATE"
             active_notional += notional
+            self._publish_portfolio(position_notional, active_notional)
         return actions
 
     def get_custom_info(self) -> dict[str, Any]:
         now = self.market_data_provider.time()
         active = self._active()
         details = dict(self.processed_data)
+        pnl = sum((Decimal(str(getattr(item, "net_pnl_quote", ZERO) or ZERO)) for item in self.executors_info), ZERO)
+        self._peak_pnl = max(self._peak_pnl, pnl)
         for level in ("bid", "ask"):
             executor = active.get(level)
             details[f"active_{level}"] = getattr(getattr(executor, "config", None), "price", None)
@@ -617,6 +711,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "replaces_per_minute": sum(1 for _, action in self._action_events if action == "replace"),
                 "cancels_per_minute": sum(1 for _, action in self._action_events if action == "cancel"),
                 "mutations_per_minute": self._mutations_last_minute(now),
+                "max_quote_mutations_per_minute": self.config.max_quote_mutations_per_minute,
                 "last_actions": self._last_action,
                 "fills": sum(
                     1
@@ -624,9 +719,10 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                     if Decimal(str(getattr(item, "filled_amount_quote", ZERO) or ZERO)) > ZERO
                 ),
                 "volume": sum((Decimal(str(getattr(item, "filled_amount_quote", ZERO) or ZERO)) for item in self.executors_info), ZERO),
-                "pnl": sum((Decimal(str(getattr(item, "net_pnl_quote", ZERO) or ZERO)) for item in self.executors_info), ZERO),
-                "markout_30s_bps": None,
-                "markout_60s_bps": None,
+                "pnl": pnl,
+                "drawdown": self._peak_pnl - pnl,
+                "markout_30s_bps": self.processed_data.get("markout_30s_bps"),
+                "markout_60s_bps": self.processed_data.get("markout_60s_bps"),
                 "uptime_seconds": max(0.0, now - self._started_at),
                 "shadow_mode": self.config.shadow_mode,
                 "mainnet_armed": self.config.mainnet_armed,

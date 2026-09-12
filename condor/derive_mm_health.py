@@ -58,6 +58,8 @@ def health_snapshot(
 ) -> dict[str, Any]:
     now = time.time() if now is None else now
     payload = _mapping(bot_payload)
+    if str(payload.get("status", "")).lower() == "success" and _mapping(payload.get("data")):
+        payload = _mapping(payload["data"])
     bot_status = str(payload.get("status", "STOPPED")).upper()
     assets = {asset: _find_asset(payload, asset) for asset in ASSETS}
     alerts: list[str] = []
@@ -72,11 +74,14 @@ def health_snapshot(
             alerts.append(f"DERIVE_STALE:{asset}:{reason}")
         if operational == "RISK_PAUSED":
             alerts.append(f"PORTFOLIO_LIMIT:{asset}:{reason}")
+        if operational == "ERROR":
+            alerts.append(f"CONTROLLER_ERROR:{asset}:{reason}")
         if str(row.get("market_state", "")) == "EXTREME":
             alerts.append(f"EXTREME_VOL:{asset}")
         if str(row.get("inventory_mode", "")) in {"ASK_ONLY", "BID_ONLY"}:
             alerts.append(f"INVENTORY_LIMIT:{asset}")
-        if int(row.get("mutations_per_minute", 0) or 0) >= 30:
+        mutation_limit = int(row.get("max_quote_mutations_per_minute", 30) or 30)
+        if int(row.get("mutations_per_minute", 0) or 0) >= mutation_limit:
             alerts.append(f"EXCESSIVE_CHURN:{asset}")
         if float(row.get("pnl", 0) or 0) <= -max_controller_drawdown_quote:
             alerts.append(f"DRAWDOWN_LIMIT:{asset}")
@@ -93,8 +98,10 @@ def health_snapshot(
             alerts.append(f"ORDER_REJECT:{message[:120]}")
         elif "ERROR" in upper or "EXCEPTION" in upper:
             alerts.append(f"CONTROLLER_ERROR:{message[:120]}")
-    if bot_status not in {"RUNNING", "STARTED"}:
+    if bot_status in {"STOPPED", "NOT_FOUND", "ERROR", "STOPPING"}:
         alerts.append("PROCESS_DOWN")
+    elif bot_status == "IDLE":
+        alerts.append("CONTROLLER_ERROR:bot heartbeat idle")
     overall = "HEALTHY"
     if any(item.startswith(("PROCESS_DOWN", "UNEXPECTED_POSITION", "DRAWDOWN_LIMIT")) for item in alerts):
         overall = "CRITICAL"
@@ -102,10 +109,24 @@ def health_snapshot(
         overall = "PAUSED"
     elif alerts:
         overall = "DEGRADED"
-    return {"overall": overall, "bot_status": bot_status, "assets": assets, "alerts": alerts}
+    rows = list(assets.values())
+    execution_modes = {"SHADOW" if row.get("shadow_mode") else "LIVE_ARMED" if row.get("mainnet_armed") else "LIVE_DISARMED" for row in rows if row}
+    overview = {
+        "execution_mode": ", ".join(sorted(execution_modes)) or "UNKNOWN",
+        "uptime_seconds": min((float(row.get("uptime_seconds", 0) or 0) for row in rows if row), default=0),
+        "last_update": max((float(row.get("updated_at", 0) or 0) for row in rows if row), default=0),
+        "total_pnl": sum((float(row.get("pnl", 0) or 0) for row in rows), 0.0),
+        "total_volume": sum((float(row.get("volume", 0) or 0) for row in rows), 0.0),
+        "total_exposure": sum((abs(float(row.get("position_notional", 0) or 0)) for row in rows), 0.0),
+        "drawdown": sum((float(row.get("drawdown", 0) or 0) for row in rows), 0.0),
+        "errors": len(payload.get("error_logs", []) or []),
+    }
+    return {"overall": overall, "bot_status": bot_status, "assets": assets, "alerts": alerts, "overview": overview}
 
 
 def _asset_row(asset: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    position_amount = float(row.get("position_amount", 0) or 0)
+    position_side = "LONG" if position_amount > 0 else "SHORT" if position_amount < 0 else "FLAT"
     return {
         "Asset": asset,
         "Derive BBO": str(row.get("derive_bbo", "—")),
@@ -113,7 +134,7 @@ def _asset_row(asset: str, row: Mapping[str, Any]) -> dict[str, Any]:
         "Fair": str(row.get("binance_fair_value", "—")),
         "Basis bps": str(row.get("basis_bps", "—")),
         "State / mode": f"{row.get('market_state', '—')} / {row.get('mm_mode', '—')}",
-        "Inventory": f"{row.get('inventory_mode', '—')} {row.get('position_notional', '—')}",
+        "Inventory": f"{row.get('inventory_mode', '—')} {position_side} {row.get('position_notional', '—')}",
         "Desired": f"{row.get('desired_bid', '—')} / {row.get('desired_ask', '—')}",
         "Active": f"{row.get('active_bid', '—')} / {row.get('active_ask', '—')}",
         "Quote age": f"{row.get('bid_age', '—')} / {row.get('ask_age', '—')}",
@@ -144,6 +165,7 @@ async def run(config: Config, context: Any) -> str:
         auto_refresh_seconds=config.report_auto_refresh_seconds,
     )
     ticks = 0
+    prior_alerts: set[str] = set()
     try:
         while True:
             client = await get_client(chat_id, context=context)
@@ -154,6 +176,17 @@ async def run(config: Config, context: Any) -> str:
                 except Exception as exc:  # fail closed and keep the board alive
                     payload = {"status": "STOPPED", "error_logs": [{"msg": f"{type(exc).__name__}: {exc}"}]}
             snapshot = health_snapshot(payload, max_controller_drawdown_quote=config.max_controller_drawdown_quote)
+            current_alerts = set(snapshot["alerts"])
+            new_alerts = sorted(current_alerts - prior_alerts)
+            if new_alerts and chat_id is not None and getattr(context, "bot", None) is not None:
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="Derive XRP/LINK MM alert\n" + "\n".join(new_alerts),
+                    )
+                except Exception:
+                    pass
+            prior_alerts = current_alerts
             report.clear()
             report.builder.manual_order()
             report.builder.kpi("Overall", snapshot["overall"])
@@ -167,6 +200,15 @@ async def run(config: Config, context: Any) -> str:
                 "Binance",
                 "STALE" if any(a.startswith("BINANCE_STALE") for a in snapshot["alerts"]) else "HEALTHY",
             )
+            overview = snapshot["overview"]
+            report.builder.kpi("Execution mode", overview["execution_mode"])
+            report.builder.kpi("Uptime", f"{overview['uptime_seconds']:.0f}s")
+            report.builder.kpi("Total PnL", f"{overview['total_pnl']:.4f}")
+            report.builder.kpi("Total volume", f"{overview['total_volume']:.4f}")
+            report.builder.kpi("Total exposure", f"{overview['total_exposure']:.4f}")
+            report.builder.kpi("Drawdown", f"{overview['drawdown']:.4f}")
+            report.builder.kpi("Errors", str(overview["errors"]))
+            report.builder.kpi("Last update", str(overview["last_update"] or "—"))
             report.builder.table([_asset_row(asset, snapshot["assets"][asset]) for asset in ASSETS])
             report.builder.markdown("## Alerts\n" + ("\n".join(f"- {item}" for item in snapshot["alerts"]) or "- None"))
             await report.update()

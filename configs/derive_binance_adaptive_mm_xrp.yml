@@ -12,6 +12,7 @@ leverage: 1
 shadow_mode: true
 mainnet_armed: false
 manual_kill_switch: false
+total_amount_quote: 800
 portfolio_capital_quote: 800
 reserve_quote: 200
 asset_cap_quote: 300
