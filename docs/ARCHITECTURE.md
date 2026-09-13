@@ -37,3 +37,18 @@ desired quotes) is separate from operational state (`SHADOW`,
 The controller is suitable for deterministic V2 logic tests. Candle backtests
 cannot validate queue residency, rapid cross-venue moves, trade-through, or
 markouts; use recorded BBO replay or native shadow mode for those questions.
+
+## Shared safety boundary
+
+Before returning a create action, the controller signs the proposed fill,
+projects the resulting position, applies asset and portfolio caps, quantizes a
+safe residual size with Derive's native rule, and records a pending reservation.
+Both XRP and LINK use one locked class-level registry keyed by `portfolio_id`,
+so a second controller cycle sees the first controller's not-yet-active action.
+Active bid, active ask, pending creates, current inventory, portfolio inventory,
+and capital minus reserve are all part of the decision.
+
+Market-data transport freshness comes from Hummingbot 2.16.0 tracker message
+metrics when available. BBO-change age is retained as a separate activity
+metric and conservative fallback. Account-level native telemetry is likewise
+separate from the sum of strategy executor PnL.

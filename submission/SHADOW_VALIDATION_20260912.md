@@ -1,5 +1,9 @@
 # Native Hummingbot and Condor shadow validation
 
+> Historical pre-hardening evidence only. Its floating `latest` image identity
+> is superseded by `LIVE_SAFETY_HARDENING.md` and must not be used for the
+> competition runtime pin.
+
 ## Scope
 
 - Instance: `derive-binance-adaptive-mm-shadow-final-20260912-224929`

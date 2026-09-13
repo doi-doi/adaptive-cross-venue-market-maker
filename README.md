@@ -27,10 +27,11 @@ to `derive_perpetual`; there is no custom private REST/WebSocket execution.
 3. Observe Derive BBO and native trading rules.
 4. Select a deterministic market-making mode.
 5. Let inventory and portfolio risk override directional skew.
-6. Produce at most one post-only bid and one post-only ask.
-7. Preserve queue residency with tick-aware hold, deadband, and minimum residency.
-8. Cancel the vulnerable side immediately on a fast adverse Binance move.
-9. Pause on stale Binance, stale Derive, extreme conditions, or risk limits.
+6. Project each fill against signed inventory, safely resize it, and atomically reserve shared XRP/LINK risk.
+7. Produce at most one post-only bid and one post-only ask.
+8. Preserve queue residency with tick-aware hold, deadband, and minimum residency.
+9. Cancel the vulnerable side immediately on a fast adverse Binance move.
+10. Pause on stale Binance, stale Derive, extreme conditions, or risk limits.
 
 | Market state | MM mode |
 |---|---|
@@ -55,6 +56,11 @@ is a modest maker-quote skew, never a directional position target.
 
 Real creates require both `shadow_mode: false` and `mainnet_armed: true`.
 Shadow mode computes the full state and desired quotes but emits no creates.
+The committed configs disable position flips and add an account-equity drawdown
+gate where authenticated native account state is available. Hummingbot 2.16.0's
+Derive connector always sends `reduce_only: false`, including for
+`PositionAction.CLOSE`; reducing quotes are capped at flatten by controller
+sizing, not represented as exchange-native reduce-only orders.
 
 ## Repository layout
 
@@ -64,20 +70,25 @@ configs/derive_binance_adaptive_mm_xrp.yml               XRP instance
 configs/derive_binance_adaptive_mm_link.yml              LINK instance
 condor/derive_mm_health.py                               read-only health routine
 docs/                                                    architecture and operations
-research/legacy/                                         legacy standalone boundary
+research/legacy/standalone_runtime/                      retired standalone runtime
 submission/                                              competition status
 tests/                                                   deterministic invariants
 ```
 
-The older `src/`, `conf/`, `scripts/`, and dashboard are retained research
-evidence only. They are not the final runtime.
+The older standalone `src`, configs, dashboard, scripts, reports, and tests are
+preserved together under `research/legacy/standalone_runtime/`. They are not
+the competition runtime.
 
 ## Verify
 
 ```bash
 python -m pytest -q
-ruff check controllers condor tests scripts src
-python scripts/controller_contract_probe.py
+ruff check controllers condor tests scripts
+python scripts/validate_competition_surface.py
+docker run --rm --volume "$PWD:/workspace:ro" --workdir /workspace \
+  --entrypoint /opt/conda/envs/hummingbot/bin/python \
+  hummingbot/hummingbot@sha256:e222f070d42814013fb5ea7fe537926f790b259512950369da1e15a69dcbd38f \
+  /workspace/scripts/controller_contract_probe.py
 ```
 
 The native contract probe must run inside the installed Hummingbot API image.

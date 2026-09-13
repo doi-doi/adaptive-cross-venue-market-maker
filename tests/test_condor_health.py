@@ -63,3 +63,30 @@ def test_process_down_is_critical_and_routine_is_read_only():
     assert module.Config().execution_enabled is False
     with pytest.raises(ValueError, match="read-only"):
         module.Config(execution_enabled=True)
+
+
+def test_account_metrics_are_not_double_counted_across_controllers():
+    data = payload()
+    for controller_row in data["controllers"].values():
+        controller_row["custom_info"].update(
+            {
+                "account_equity": 800,
+                "account_collateral_balance": 780,
+                "account_realized_pnl": 2,
+                "account_unrealized_pnl": 3,
+                "account_drawdown": 5,
+                "account_gross_position_exposure": 120,
+                "account_net_position_exposure": 20,
+                "available_collateral": 700,
+            }
+        )
+    overview = module.health_snapshot(data)["overview"]
+    assert overview["account_equity"] == 800
+    assert overview["account_collateral_balance"] == 780
+    assert overview["account_realized_pnl"] == 2
+    assert overview["account_unrealized_pnl"] == 3
+    assert overview["account_drawdown"] == 5
+    assert overview["account_gross_position_exposure"] == 120
+    assert overview["account_net_position_exposure"] == 20
+    assert overview["available_collateral"] == 700
+    assert overview["strategy_executor_pnl"] == 3

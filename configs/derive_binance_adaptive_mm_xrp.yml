@@ -12,6 +12,8 @@ leverage: 1
 shadow_mode: true
 mainnet_armed: false
 manual_kill_switch: false
+allow_position_flips: false
+max_account_drawdown_quote: 40
 total_amount_quote: 800
 portfolio_capital_quote: 800
 reserve_quote: 200

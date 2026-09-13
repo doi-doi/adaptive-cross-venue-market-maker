@@ -1,12 +1,12 @@
 # Local environment audit
 
-Audited on 2026-09-12 before implementation. No bot or exchange mutation was
-performed.
+Audited again on 2026-09-13 during live-safety hardening. No live order or
+exchange mutation was performed.
 
 | Component | Observed local source of truth |
 |---|---|
-| Hummingbot package | `20260729` from the last installed-image contract probe; Docker was stopped during this audit, so live re-probe remains required |
-| Isolated Hummingbot CI image | `hummingbot/hummingbot:latest`, digest `sha256:632d2b07aa156b761310f2f7258a78c9660a1c28b6df4b33874e09a0c7d06c85`; native contract passed in run `34702709151` |
+| Hummingbot package | `2.16.0` read from `/home/hummingbot/hummingbot/VERSION` in the pinned image |
+| Isolated Hummingbot CI image | `hummingbot/hummingbot:version-2.16.0`, immutable digest `sha256:e222f070d42814013fb5ea7fe537926f790b259512950369da1e15a69dcbd38f`; the old `632d...` value was verified as floating `latest` and rejected |
 | Hummingbot API checkout | `/Users/wilfred/Documents/Hummingbot/hummingbot-api`, commit `73e5400c960004a22695583e7201108ec44d6ab4` |
 | Controller base | `hummingbot.strategy_v2.controllers.controller_base.ControllerBase` / `ControllerConfigBase` |
 | Market-making base | Installed but single-pair convenience behavior is not used; this controller uses `ControllerBase` |
