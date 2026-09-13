@@ -184,11 +184,19 @@ class Provider:
         return amount.quantize(Decimal("1"))
 
 
-def native_controller(provider=None, **overrides):
+def native_controller(provider=None, *, seed_peer=True, **overrides):
     provider = provider or Provider()
     overrides.setdefault("binance_recovery_seconds", 0)
     cfg = config(**overrides)
-    return controller.DeriveBinanceAdaptiveMM(cfg, provider, asyncio.Queue()), provider
+    instance = controller.DeriveBinanceAdaptiveMM(cfg, provider, asyncio.Queue())
+    if seed_peer:
+        peer = "LINK" if cfg.asset == "XRP" else "XRP"
+        instance._portfolio.setdefault(cfg.portfolio_id, {})[peer] = controller.PortfolioSnapshot(
+            position_amount=Decimal("0"),
+            mark_price=Decimal("1"),
+            updated_at=provider.now,
+        )
+    return instance, provider
 
 
 @pytest.fixture(autouse=True)
@@ -295,6 +303,70 @@ def test_binance_recovery_requires_continuous_healthy_period():
     assert instance.processed_data["operational_state"] == "SHADOW"
 
 
+def test_fixed_time_volatility_samples_fresh_unchanged_mid_as_zero_return():
+    instance, provider = native_controller(binance_stale_seconds=3, derive_stale_seconds=3)
+    asyncio.run(instance.update_processed_data())
+    assert instance.processed_data["volatility_sample_count"] == 0
+
+    provider.now += 0.5
+    asyncio.run(instance.update_processed_data())
+    assert instance.processed_data["volatility_sample_count"] == 0
+
+    provider.now += 0.5
+    asyncio.run(instance.update_processed_data())
+    assert list(instance._returns) == [0.0]
+    assert instance.processed_data["volatility_sampling_state"] == "FIXED_1S"
+
+    provider.now += 1
+    provider.books["binance_perpetual_paper_trade"].bid.price += Decimal("0.001")
+    provider.books["binance_perpetual_paper_trade"].ask.price += Decimal("0.001")
+    asyncio.run(instance.update_processed_data())
+    assert len(instance._returns) == 2
+    assert instance._returns[-1] > 0
+    assert instance.processed_data["volatility_bps"] > 0
+
+
+def test_fixed_time_volatility_does_not_fill_missed_one_second_buckets():
+    instance, provider = native_controller(binance_stale_seconds=3, derive_stale_seconds=3)
+    asyncio.run(instance.update_processed_data())
+
+    provider.now += 2
+    provider.books["derive_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    assert list(instance._returns) == []
+
+    provider.now += 1
+    asyncio.run(instance.update_processed_data())
+    assert list(instance._returns) == [0.0]
+
+
+def test_stale_binance_pauses_sampling_without_synthesizing_gap_returns():
+    instance, provider = native_controller(binance_stale_seconds=2, derive_stale_seconds=2)
+    asyncio.run(instance.update_processed_data())
+    provider.now += 1
+    asyncio.run(instance.update_processed_data())
+    assert len(instance._returns) == 1
+
+    provider.now += 3
+    provider.books["derive_perpetual"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    assert instance.processed_data["operational_state"] == "REFERENCE_PAUSED"
+    assert instance.processed_data["volatility_sampling_state"] == "PAUSED_STALE"
+    assert len(instance._returns) == 1
+
+    provider.now += 1
+    provider.books["derive_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    assert len(instance._returns) == 1
+
+    provider.now += 1
+    asyncio.run(instance.update_processed_data())
+    assert len(instance._returns) == 2
+    assert instance._returns[-1] == 0.0
+
+
 def test_armed_create_actions_are_derive_only_and_one_per_side():
     instance, _ = native_controller(shadow_mode=False, mainnet_armed=True)
     asyncio.run(instance.update_processed_data())
@@ -304,6 +376,78 @@ def test_armed_create_actions_are_derive_only_and_one_per_side():
     assert {action.executor_config.connector_name for action in actions} == {"derive_perpetual"}
     assert {action.executor_config.execution_strategy for action in actions} == {ExecutionStrategy.LIMIT_MAKER}
     assert {action.executor_config.position_action for action in actions} == {PositionAction.OPEN}
+
+
+def test_missing_peer_risk_snapshot_blocks_new_creates():
+    instance, _ = native_controller(seed_peer=False, shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+
+    assert instance.determine_executor_actions() == []
+    assert instance.processed_data["peer_risk_state"] == "MISSING"
+    assert instance._last_action == {"bid": "PEER_RISK_MISSING", "ask": "PEER_RISK_MISSING"}
+
+
+def test_stale_peer_risk_snapshot_blocks_then_recovers():
+    instance, provider = native_controller(
+        shadow_mode=False,
+        mainnet_armed=True,
+        peer_stale_seconds=2,
+    )
+    asyncio.run(instance.update_processed_data())
+    peer = "LINK"
+    instance._portfolio[instance.config.portfolio_id][peer] = controller.PortfolioSnapshot(
+        position_amount=Decimal("0"),
+        mark_price=Decimal("1"),
+        updated_at=provider.now - 3,
+    )
+
+    assert instance.determine_executor_actions() == []
+    assert instance.processed_data["peer_risk_state"] == "STALE"
+
+    instance._portfolio[instance.config.portfolio_id][peer] = controller.PortfolioSnapshot(
+        position_amount=Decimal("0"),
+        mark_price=Decimal("1"),
+        updated_at=provider.now,
+    )
+    assert len(instance.determine_executor_actions()) == 2
+    assert instance.processed_data["peer_risk_state"] == "HEALTHY"
+
+
+def test_shadow_controllers_publish_healthy_peer_risk_diagnostics():
+    xrp, _ = native_controller(Provider(), seed_peer=False, id="xrp", asset="XRP")
+    link, _ = native_controller(Provider(), seed_peer=False, id="link", asset="LINK")
+
+    asyncio.run(xrp.update_processed_data())
+    assert xrp.processed_data["peer_risk_state"] == "MISSING"
+    asyncio.run(link.update_processed_data())
+    asyncio.run(xrp.update_processed_data())
+
+    assert xrp.processed_data["peer_risk_healthy"] is True
+    assert link.processed_data["peer_risk_healthy"] is True
+    assert xrp.processed_data["peer_risk_state"] == "HEALTHY"
+    assert link.processed_data["peer_risk_state"] == "HEALTHY"
+
+
+def test_safety_cancel_still_works_when_peer_risk_snapshot_is_missing():
+    instance, provider = native_controller(
+        seed_peer=False,
+        shadow_mode=False,
+        mainnet_armed=True,
+        manual_kill_switch=True,
+    )
+    instance.executors_info = [
+        types.SimpleNamespace(
+            id="bid-1",
+            is_active=True,
+            timestamp=provider.now,
+            config=types.SimpleNamespace(level_id="bid", price=Decimal("0.49"), amount=Decimal("10")),
+        )
+    ]
+
+    actions = instance.determine_executor_actions()
+    assert len(actions) == 1
+    assert isinstance(actions[0], StopExecutorAction)
+    assert actions[0].executor_id == "bid-1"
 
 
 def test_kill_switch_cancel_bypasses_exhausted_churn_budget():
@@ -564,15 +708,52 @@ def test_inventory_residual_below_native_minimum_blocks_side():
     assert instance.processed_data["bid_size_block_reason"] == "PROJECTED_ASSET_INVENTORY_LIMIT"
 
 
-def test_default_reducing_quote_flattens_but_does_not_flip():
+@pytest.mark.parametrize(
+    ("position", "level"),
+    [(Decimal("12"), "ask"), (Decimal("-12"), "bid")],
+)
+def test_default_reducing_quote_flattens_but_does_not_flip(position, level):
     provider = Provider()
-    _set_position(provider, "XRP-USDC", Decimal("12"))
+    _set_position(provider, "XRP-USDC", position)
     instance, _ = native_controller(provider, shadow_mode=False, mainnet_armed=True)
     asyncio.run(instance.update_processed_data())
     actions = instance.determine_executor_actions()
-    ask = next(action for action in actions if action.executor_config.level_id == "ask")
-    assert ask.executor_config.amount == Decimal("12")
-    assert instance.processed_data["ask_fill_effect"] == "FLATTEN"
+    action = next(item for item in actions if item.executor_config.level_id == level)
+    assert action.executor_config.amount == Decimal("12")
+    assert action.executor_config.position_action == PositionAction.CLOSE
+    assert instance.processed_data[f"{level}_fill_effect"] == "FLATTEN"
+    assert instance.processed_data[f"projected_position_amount_if_{level}_fills"] == Decimal("0")
+    assert instance.config.allow_position_flips is False
+
+
+@pytest.mark.parametrize(
+    ("position", "level"),
+    [(Decimal("100"), "ask"), (Decimal("-100"), "bid")],
+)
+def test_long_and_short_reductions_use_close(position, level):
+    provider = Provider()
+    _set_position(provider, "XRP-USDC", position)
+    instance, _ = native_controller(provider, shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+
+    action = next(item for item in instance.determine_executor_actions() if item.executor_config.level_id == level)
+    assert action.executor_config.position_action == PositionAction.CLOSE
+    assert instance.processed_data[f"{level}_fill_effect"] == "REDUCE"
+
+
+@pytest.mark.parametrize(
+    ("position", "level"),
+    [(Decimal("12"), "bid"), (Decimal("-12"), "ask")],
+)
+def test_same_direction_increases_use_open(position, level):
+    provider = Provider()
+    _set_position(provider, "XRP-USDC", position)
+    instance, _ = native_controller(provider, shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+
+    action = next(item for item in instance.determine_executor_actions() if item.executor_config.level_id == level)
+    assert action.executor_config.position_action == PositionAction.OPEN
+    assert instance.processed_data[f"{level}_fill_effect"] == "INCREASE_SAME_DIRECTION"
 
 
 def test_explicit_normal_state_flip_remains_projected_and_capped():
@@ -585,6 +766,7 @@ def test_explicit_normal_state_flip_remains_projected_and_capped():
     actions = instance.determine_executor_actions()
     ask = next(action for action in actions if action.executor_config.level_id == "ask")
     assert ask.executor_config.amount > Decimal("12")
+    assert ask.executor_config.position_action == PositionAction.OPEN
     assert instance.processed_data["ask_fill_effect"] == "FLIP_DIRECTION"
     assert abs(instance.processed_data["projected_position_notional_if_ask_fills"]) <= Decimal("180")
 
@@ -677,6 +859,14 @@ def test_pending_create_reservation_prevents_duplicate_create():
         "ask": "PENDING_CREATE_RESERVATION",
     }
     instance.market_data_provider.now += instance._reservation_ttl_seconds + 1
+    instance.market_data_provider.books["derive_perpetual"].last_diff_uid += 1
+    instance.market_data_provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    instance._portfolio[instance.config.portfolio_id]["LINK"] = controller.PortfolioSnapshot(
+        position_amount=Decimal("0"),
+        mark_price=Decimal("1"),
+        updated_at=instance.market_data_provider.now,
+    )
+    asyncio.run(instance.update_processed_data())
     assert len(instance.determine_executor_actions()) == 2
 
 

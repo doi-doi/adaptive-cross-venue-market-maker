@@ -34,6 +34,7 @@ def main() -> None:
             "mainnet_armed": False,
             "allow_position_flips": False,
             "max_account_drawdown_quote": 40,
+            "peer_stale_seconds": 5,
         }
         mismatches = {key: (row.get(key), value) for key, value in expected.items() if row.get(key) != value}
         if mismatches:

@@ -159,6 +159,7 @@ class PortfolioSnapshot:
     open_bid_price: Decimal = ZERO
     open_ask_amount: Decimal = ZERO
     open_ask_price: Decimal = ZERO
+    updated_at: float = 0.0
 
     @property
     def position_notional(self) -> Decimal:
@@ -336,6 +337,7 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
 
     binance_stale_seconds: Decimal = Field(default=Decimal("3"), gt=0)
     derive_stale_seconds: Decimal = Field(default=Decimal("3"), gt=0)
+    peer_stale_seconds: Decimal = Field(default=Decimal("5"), gt=0)
     binance_recovery_seconds: Decimal = Field(default=Decimal("3"), ge=0)
     book_depth_levels: int = Field(default=5, ge=1, le=20)
     basis_window: int = Field(default=120, ge=5, le=3600)
@@ -461,7 +463,8 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         self._candidate_state: MarketState | None = None
         self._candidate_since: float | None = None
         self._plan: QuotePlan | None = None
-        self._last_reference_mid: Decimal | None = None
+        self._volatility_sample_at: float | None = None
+        self._volatility_sample_mid: Decimal | None = None
         self._fast_move_bps = ZERO
         self._action_timestamps: deque[float] = deque()
         self._action_events: deque[tuple[float, str]] = deque()
@@ -607,6 +610,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         position_amount: Decimal,
         mark_price: Decimal,
         active: dict[str, Any],
+        updated_at: float,
     ) -> PortfolioSnapshot:
         def amount_and_price(level: str) -> tuple[Decimal, Decimal]:
             config = getattr(active.get(level), "config", None)
@@ -624,9 +628,41 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             open_bid_price=bid_price,
             open_ask_amount=ask_amount,
             open_ask_price=ask_price,
+            updated_at=updated_at,
         )
         self._portfolio.setdefault(self.config.portfolio_id, {})[self.config.asset] = snapshot
         return snapshot
+
+    def _peer_risk_health(self, now: float) -> tuple[bool, str, dict[str, float | None]]:
+        snapshots = self._portfolio.setdefault(self.config.portfolio_id, {})
+        ages = {
+            asset: max(0.0, now - snapshots[asset].updated_at) if asset in snapshots else None
+            for asset in ("XRP", "LINK")
+        }
+        if any(age is None for age in ages.values()):
+            return False, "MISSING", ages
+        if any(age > float(self.config.peer_stale_seconds) for age in ages.values() if age is not None):
+            return False, "STALE", ages
+        return True, "HEALTHY", ages
+
+    def _record_fixed_volatility_sample(self, now: float, mid: Decimal) -> None:
+        """Record returns between adjacent one-second buckets; never fill missed buckets."""
+        sample_second = float(int(now))
+        if self._volatility_sample_at is None or self._volatility_sample_mid is None:
+            self._volatility_sample_at = sample_second
+            self._volatility_sample_mid = mid
+            return
+        elapsed_seconds = sample_second - self._volatility_sample_at
+        if elapsed_seconds <= 0:
+            return
+        if elapsed_seconds == 1:
+            self._returns.append(float(mid / self._volatility_sample_mid - ONE))
+        self._volatility_sample_at = sample_second
+        self._volatility_sample_mid = mid
+
+    def _pause_volatility_sampling(self) -> None:
+        self._volatility_sample_at = None
+        self._volatility_sample_mid = None
 
     def _native_feed_age(self, connector_name: str, pair: str) -> tuple[Decimal | None, str]:
         """Read the 2.16.0 tracker message clock; never infer transport health from price."""
@@ -799,6 +835,8 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 raise RuntimeError("DERIVE_STALE")
             if binance_age > self.config.binance_stale_seconds:
                 self._reference_recovered_at = None
+                self._pause_volatility_sampling()
+                self.processed_data["volatility_sampling_state"] = "PAUSED_STALE"
                 operational = OperationalState.REFERENCE_PAUSED
                 raise RuntimeError("BINANCE_STALE")
             if reference_changed and self._reference_recovered_at is None:
@@ -815,9 +853,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             micro_bps = (microprice / binance_mid - ONE) * BPS
             micro_bps = max(-self.config.microprice_adjustment_max_bps, min(self.config.microprice_adjustment_max_bps, micro_bps))
 
-            if self._last_reference_mid and reference_changed:
-                self._returns.append(float(binance_mid / self._last_reference_mid - ONE))
-            self._last_reference_mid = binance_mid
+            self._record_fixed_volatility_sample(now, binance_mid)
             self._reference_history.append((now, binance_mid))
             cutoff = now - float(self.config.direction_window_seconds)
             anchor = next((price for stamp, price in self._reference_history if stamp >= cutoff), self._reference_history[0][1])
@@ -897,7 +933,8 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             active = self._active()
             with self._portfolio_lock:
                 self._prune_reservations(now, active)
-                own_snapshot = self._publish_portfolio(position, derive_mid, active)
+                own_snapshot = self._publish_portfolio(position, derive_mid, active, now)
+                peer_healthy, peer_state, peer_ages = self._peer_risk_health(now)
                 total_inventory, total_orders = self._portfolio_totals()
                 previews: dict[str, tuple[Decimal, str, Decimal, FillEffect]] = {}
                 for level, side, price in (
@@ -955,6 +992,9 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "basis_bps": causal_basis,
                 "direction_bps": direction_bps,
                 "volatility_bps": volatility_bps,
+                "volatility_sample_interval_seconds": 1,
+                "volatility_sample_count": len(self._returns),
+                "volatility_sampling_state": "FIXED_1S",
                 "market_state": self._market_state.value,
                 "mm_mode": self._plan.mm_mode.value,
                 "inventory_mode": inventory_mode.value,
@@ -989,6 +1029,10 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "markout_60s_bps": markout_60,
                 "block_reason": self._plan.reason,
                 "derive_snapshot_compatibility_active": DERIVE_SNAPSHOT_RACE_COMPATIBILITY_ACTIVE,
+                "risk_snapshot_updated_at": now,
+                "peer_risk_healthy": peer_healthy,
+                "peer_risk_state": peer_state,
+                "peer_risk_snapshot_age_seconds": peer_ages,
                 **account_risk,
                 "updated_at": now,
             }
@@ -1000,6 +1044,8 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             }:
                 operational = OperationalState.ERROR
             self._plan = None
+            with self._portfolio_lock:
+                peer_healthy, peer_state, peer_ages = self._peer_risk_health(now)
             self.processed_data.update(
                 {
                     "asset": self.config.asset,
@@ -1008,6 +1054,9 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                     "desired_bid": None,
                     "desired_ask": None,
                     "block_reason": str(exc),
+                    "peer_risk_healthy": peer_healthy,
+                    "peer_risk_state": peer_state,
+                    "peer_risk_snapshot_age_seconds": peer_ages,
                     "updated_at": now,
                 }
             )
@@ -1194,7 +1243,8 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         mark_price = (Decimal(str(derive_bbo[0])) + Decimal(str(derive_bbo[1]))) / Decimal("2")
         with self._portfolio_lock:
             self._prune_reservations(now, active)
-            self._publish_portfolio(position_amount, mark_price, active)
+            risk_updated_at = float(self.processed_data.get("risk_snapshot_updated_at", 0.0) or 0.0)
+            self._publish_portfolio(position_amount, mark_price, active, risk_updated_at)
         actions: list[ExecutorAction] = []
         for executor in self._unexpected_active:
             action = self._stop(executor, now, "UNEXPECTED_OR_DUPLICATE_EXECUTOR")
@@ -1250,6 +1300,17 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         if actions:
             return actions
 
+        with self._portfolio_lock:
+            peer_healthy, peer_state, peer_ages = self._peer_risk_health(now)
+        self.processed_data["peer_risk_state"] = peer_state
+        self.processed_data["peer_risk_snapshot_age_seconds"] = peer_ages
+        if not peer_healthy:
+            for level, (_, price) in desired.items():
+                if level not in active and price is not None:
+                    self._last_action[level] = f"PEER_RISK_{peer_state}"
+                    self.processed_data[f"{level}_size_block_reason"] = f"PEER_RISK_{peer_state}"
+            return []
+
         for level, (side, price) in desired.items():
             if level in active or price is None:
                 continue
@@ -1286,7 +1347,11 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 side=side,
                 amount=amount,
                 price=price,
-                position_action=PositionAction.OPEN,
+                position_action=(
+                    PositionAction.CLOSE
+                    if fill_effect in {FillEffect.REDUCE, FillEffect.FLATTEN}
+                    else PositionAction.OPEN
+                ),
                 execution_strategy=ExecutionStrategy.LIMIT_MAKER,
                 leverage=self.config.leverage,
             )
