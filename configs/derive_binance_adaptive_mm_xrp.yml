@@ -12,6 +12,8 @@ leverage: 1
 shadow_mode: true
 mainnet_armed: false
 manual_kill_switch: false
+allow_position_flips: false
+max_account_drawdown_quote: 40
 total_amount_quote: 800
 portfolio_capital_quote: 800
 reserve_quote: 200
@@ -23,6 +25,7 @@ max_asset_open_order_quote: 100
 order_amount_quote: 25
 binance_stale_seconds: 3
 derive_stale_seconds: 3
+peer_stale_seconds: 5
 binance_recovery_seconds: 3
 normal_refresh_deadband_bps: 3
 minimum_normal_quote_residency_seconds: 10

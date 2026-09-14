@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -12,6 +13,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(_ROOT / "controllers")]
 
 from market_making.derive_binance_adaptive_mm import (  # noqa: E402
+    DERIVE_SNAPSHOT_RACE_COMPATIBILITY_ACTIVE,
     DeriveBinanceAdaptiveMM,
     DeriveBinanceAdaptiveMMConfig,
 )
@@ -64,6 +66,27 @@ class _Provider:
 
 
 async def main() -> None:
+    import hummingbot
+    from hummingbot.connector.derivative.derive_perpetual.derive_perpetual_derivative import (
+        DerivePerpetualDerivative,
+    )
+
+    version = (Path(hummingbot.__file__).resolve().parent / "VERSION").read_text(encoding="utf-8").strip()
+    if version != "2.16.0":
+        raise AssertionError(f"expected Hummingbot 2.16.0, got {version}")
+    place_order_source = inspect.getsource(DerivePerpetualDerivative._place_order)
+    if '"reduce_only": False' not in place_order_source:
+        raise AssertionError("Derive payload semantics changed: reduce_only=False not found")
+    if '"reduce_only": position_action' in place_order_source:
+        raise AssertionError("unexpected PositionAction-derived reduce_only behavior")
+    limit_maker_gtc = (
+        "order_type is OrderType.LIMIT_MAKER" in place_order_source
+        and 'param_order_type = "gtc"' in place_order_source
+    )
+    if not limit_maker_gtc:
+        raise AssertionError("Derive LIMIT_MAKER gtc contract changed")
+    if not DERIVE_SNAPSHOT_RACE_COMPATIBILITY_ACTIVE:
+        raise AssertionError("guarded 2.16.0 Derive snapshot shim did not activate")
     config = DeriveBinanceAdaptiveMMConfig(
         id="contract_probe",
         asset="XRP",
@@ -79,6 +102,8 @@ async def main() -> None:
     if controller.processed_data.get("mm_mode") == "PAUSED":
         raise AssertionError(f"controller did not calculate quotes: {controller.processed_data}")
     print(f"shadow={config.shadow_mode} asset={config.asset} reference={config.reference_connector_name} actions={len(actions)}")
+    print("derive_position_action=open_or_close reduce_only=false limit_maker_tif=gtc")
+    print(f"hummingbot={version} snapshot_shim={DERIVE_SNAPSHOT_RACE_COMPATIBILITY_ACTIVE}")
     print(controller.to_format_status()[0])
 
 

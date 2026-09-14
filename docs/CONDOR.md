@@ -83,3 +83,15 @@ unresponsive, use `manage_bots(action="stop_bot", bot_name=...)`; this archives
 the bot and is therefore a last resort. Neither operation arms mainnet.
 
 There is intentionally no unattended `ARM_MAINNET` action.
+
+## Health metric ownership
+
+Condor reports per-controller strategy executor PnL and position diagnostics.
+Derive account equity (when available), collateral balance, available
+collateral, account unrealized PnL, gross/net account exposure, and account
+drawdown are taken from one controller only because XRP and LINK observe the
+same subaccount. Account values are never summed across controllers.
+Unsupported native values display as `N/A`.
+
+Each asset row shows native feed age separately from last BBO-change age plus
+the risk-adjusted bid/ask sizes and projected post-fill notionals.

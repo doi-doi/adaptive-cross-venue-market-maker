@@ -5,16 +5,19 @@ on:
   push:
     branches:
       - main
-      - codex/hummingbot-condor-final
+      - codex/live-safety-hardening
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   deterministic-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -22,7 +25,15 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[dev]'
       - run: pytest -q
-      - run: ruff check controllers condor tests scripts src
+      - run: ruff check controllers condor tests scripts
+      - name: Validate current and legacy configuration boundaries
+        run: python scripts/validate_competition_surface.py
+      - name: Reject tracked files larger than 10 MiB
+        run: test -z "$(find . -type f -size +10M -not -path './.git/*' -print -quit)"
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   native-hummingbot-contract:
     runs-on: ubuntu-latest
@@ -35,5 +46,5 @@ jobs:
           --env PYTHONPATH=/home/hummingbot
           --workdir /workspace
           --entrypoint /opt/conda/envs/hummingbot/bin/python
-          hummingbot/hummingbot:latest
+          hummingbot/hummingbot@sha256:e222f070d42814013fb5ea7fe537926f790b259512950369da1e15a69dcbd38f
           /workspace/scripts/controller_contract_probe.py
