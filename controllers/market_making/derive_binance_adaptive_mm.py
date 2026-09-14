@@ -466,7 +466,10 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
 
     shadow_mode: bool = Field(default=True)
     mainnet_armed: bool = Field(default=False)
-    manual_kill_switch: bool = Field(default=False)
+    # Hummingbot's V2 controller reload only applies fields explicitly marked
+    # updatable.  Keep the normal Condor stop path live after this subclass
+    # redeclares the base controller field.
+    manual_kill_switch: bool = Field(default=False, json_schema_extra={"is_updatable": True})
     allow_position_flips: bool = Field(default=False)
     max_account_drawdown_quote: Decimal | None = Field(default=None, gt=0)
 

@@ -46,6 +46,16 @@ class ControllerBase:
         self.market_data_provider = kwargs.get("market_data_provider") or (args[0] if args else None)
         self.executors_info = []
 
+    def update_config(self, new_config):
+        """Mirror Hummingbot V2's updatable-field config reload behavior."""
+        updatable = {
+            name: getattr(new_config, name)
+            for name, field_info in self.config.__class__.model_fields.items()
+            if (field_info.json_schema_extra or {}).get("is_updatable", False)
+        }
+        if updatable:
+            self.config = self.config.model_copy(update=updatable)
+
 
 class ExecutionStrategy(Enum):
     LIMIT_MAKER = "LIMIT_MAKER"
@@ -869,6 +879,120 @@ def test_pending_cancel_blocks_replacement_until_terminal_confirmation():
     assert len(actions) == 2
     assert all(isinstance(action, CreateExecutorAction) for action in actions)
     assert instance.processed_data["pending_cancels"] == []
+
+
+def _reload_manual_kill_switch(instance, enabled=True):
+    """Apply the flag through the same updatable-field path as Hummingbot."""
+    reloaded = instance.config.model_copy(update={"manual_kill_switch": enabled})
+    instance.update_config(reloaded)
+
+
+def test_manual_kill_switch_is_applied_by_hummingbot_config_reload():
+    field = config().model_fields["manual_kill_switch"]
+    assert field.json_schema_extra == {"is_updatable": True}
+
+    instance, _ = native_controller(shadow_mode=False, mainnet_armed=True)
+    assert instance.config.manual_kill_switch is False
+    _reload_manual_kill_switch(instance)
+    assert instance.config.manual_kill_switch is True
+
+
+def test_stop_requested_cancels_active_quotes_without_new_creates():
+    instance, provider = native_controller(
+        Provider(),
+        shadow_mode=False,
+        mainnet_armed=True,
+        minimum_normal_quote_residency_seconds=Decimal("0"),
+        normal_refresh_deadband_bps=Decimal("1"),
+    )
+    asyncio.run(instance.update_processed_data())
+    _manual_plan(instance, "0.4990", "0.5000")
+    instance.executors_info = [
+        _executor("bid-1", "bid", "0.4990", provider.now - 20),
+        _executor("ask-1", "ask", "0.5010", provider.now - 20),
+    ]
+
+    _reload_manual_kill_switch(instance)
+    actions = instance.determine_executor_actions()
+
+    assert {action.executor_id for action in actions} == {"bid-1", "ask-1"}
+    assert all(type(action) is StopExecutorAction for action in actions)
+    assert not any(type(action) is CreateExecutorAction for action in actions)
+
+
+def test_stop_requested_while_cancellation_pending_blocks_replacements():
+    instance, provider = native_controller(
+        Provider(),
+        shadow_mode=False,
+        mainnet_armed=True,
+        minimum_normal_quote_residency_seconds=Decimal("0"),
+        normal_refresh_deadband_bps=Decimal("1"),
+    )
+    asyncio.run(instance.update_processed_data())
+    _manual_plan(instance, "0.4990", "0.5000")
+    instance.executors_info = [
+        _executor("bid-1", "bid", "0.4990", provider.now - 20),
+        _executor("ask-1", "ask", "0.5010", provider.now - 20),
+    ]
+
+    _reload_manual_kill_switch(instance)
+    first_actions = instance.determine_executor_actions()
+    assert len(first_actions) == 2
+    for executor in instance.executors_info:
+        executor.is_active = False
+        executor.status = "SHUTTING_DOWN"
+
+    replacement_actions = instance.determine_executor_actions()
+
+    assert replacement_actions == []
+    assert instance.processed_data["pending_cancels"] == ["ask", "bid"]
+    assert not any(type(action) is CreateExecutorAction for action in replacement_actions)
+
+
+def test_asserted_stop_remains_create_free_across_subsequent_cycles():
+    instance, provider = native_controller(
+        Provider(),
+        shadow_mode=False,
+        mainnet_armed=True,
+        minimum_normal_quote_residency_seconds=Decimal("0"),
+        normal_refresh_deadband_bps=Decimal("1"),
+    )
+    asyncio.run(instance.update_processed_data())
+    _manual_plan(instance, "0.4990", "0.5000")
+    instance.executors_info = [
+        _executor("bid-1", "bid", "0.4990", provider.now - 20),
+        _executor("ask-1", "ask", "0.5010", provider.now - 20),
+    ]
+
+    _reload_manual_kill_switch(instance)
+    assert len(instance.determine_executor_actions()) == 2
+    for executor in instance.executors_info:
+        executor.is_active = False
+        executor.status = "TERMINATED"
+
+    for _ in range(3):
+        actions = instance.determine_executor_actions()
+        assert actions == []
+        assert not any(type(action) is CreateExecutorAction for action in actions)
+
+
+def test_shadow_normal_stop_cancels_active_quotes_without_real_creates():
+    instance, provider = native_controller(Provider())
+    asyncio.run(instance.update_processed_data())
+    _manual_plan(instance, "0.4990", "0.5000")
+    instance.executors_info = [
+        _executor("bid-1", "bid", "0.4990", provider.now - 20),
+        _executor("ask-1", "ask", "0.5010", provider.now - 20),
+    ]
+
+    _reload_manual_kill_switch(instance)
+    actions = instance.determine_executor_actions()
+
+    assert instance.config.shadow_mode is True
+    assert instance.config.mainnet_armed is False
+    assert {action.executor_id for action in actions} == {"bid-1", "ask-1"}
+    assert all(type(action) is StopExecutorAction for action in actions)
+    assert not any(type(action) is CreateExecutorAction for action in actions)
 
 
 def test_simultaneous_quotes_that_collapse_to_same_native_price_are_blocked():
