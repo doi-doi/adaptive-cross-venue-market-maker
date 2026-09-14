@@ -1,4 +1,4 @@
-# Derive Binance-Reference Adaptive Market Maker
+# Adaptive Cross-Venue Market Maker
 
 **Hummingbot Strategy V2 + Condor | XRP / LINK | Derive perpetual execution |
 Binance perpetual reference**
