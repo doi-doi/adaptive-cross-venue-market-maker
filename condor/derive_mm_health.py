@@ -1,4 +1,4 @@
-"""Read-only Condor health routine for the XRP/LINK adaptive MM bot."""
+"""Read-only Condor health routine for the Adaptive XRP MM bot."""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ from pydantic import BaseModel, Field, model_validator
 
 CATEGORY = "Monitoring"
 CONTINUOUS = True
-ASSETS = ("XRP", "LINK")
+ASSETS = ("XRP",)
 
 
 class Config(BaseModel):
-    bot_name: str = Field(default="derive-binance-adaptive-mm-shadow")
+    bot_name: str = Field(default="derive-binance-adaptive-mm-xrp-shadow")
     poll_interval_seconds: float = Field(default=3.0, ge=1.0, le=30.0)
     report_auto_refresh_seconds: int = Field(default=3, ge=1, le=30)
     max_controller_drawdown_quote: float = Field(default=25.0, gt=0)
@@ -65,7 +65,11 @@ def health_snapshot(
     bot_status = str(payload.get("status", "STOPPED")).upper()
     assets = {asset: _find_asset(payload, asset) for asset in ASSETS}
     alerts: list[str] = []
-    for asset, row in assets.items():
+    # A stopped/not-found bot has one process-level alert. Do not also emit a
+    # synthetic missing-controller alert for the same stopped state.
+    inspect_controllers = bot_status not in {"STOPPED", "NOT_FOUND", "ERROR", "STOPPING"}
+    controller_rows = assets.items() if inspect_controllers else ()
+    for asset, row in controller_rows:
         operational = str(row.get("operational_state", "ERROR"))
         reason = str(row.get("block_reason", ""))
         if not row:
@@ -144,8 +148,7 @@ def health_snapshot(
             (float(row.get("strategy_executor_drawdown", row.get("drawdown", 0)) or 0) for row in rows), 0.0
         ),
         "drawdown": sum((float(row.get("strategy_executor_drawdown", row.get("drawdown", 0)) or 0) for row in rows), 0.0),
-        # Account fields are copied from one controller only. Both controllers
-        # observe the same Derive subaccount, so summing would double count it.
+        # Account fields are copied from the single controller.
         "account_realized_pnl": account.get("account_realized_pnl"),
         "account_unrealized_pnl": account.get("account_unrealized_pnl"),
         "account_equity": account.get("account_equity"),
@@ -208,9 +211,9 @@ async def run(config: Config, context: Any) -> str:
 
     chat_id = getattr(context, "_chat_id", None)
     report = LiveReport(
-        "Derive XRP/LINK Adaptive MM Health",
+        "Adaptive XRP Cross-Venue Market Maker Health",
         source_name="derive_mm_health",
-        tags=["derive", "xrp", "link", "read-only"],
+        tags=["derive", "xrp", "read-only"],
         auto_refresh_seconds=config.report_auto_refresh_seconds,
     )
     ticks = 0
@@ -235,7 +238,7 @@ async def run(config: Config, context: Any) -> str:
                 try:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text="Derive XRP/LINK MM alert\n" + "\n".join(new_alerts),
+                        text="Adaptive XRP MM alert\n" + "\n".join(new_alerts),
                     )
                 except Exception:
                     pass

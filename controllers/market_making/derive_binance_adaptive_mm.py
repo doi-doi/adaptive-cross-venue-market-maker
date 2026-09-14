@@ -1,8 +1,7 @@
-"""Native Hummingbot V2 Binance-reference market maker for Derive perpetuals.
+"""Native Hummingbot V2 Binance-reference market maker for Derive XRP perpetuals.
 
-One controller instance owns one asset.  The same class is configured once for
-XRP and once for LINK.  Binance is market data only; every executor action is
-hard-wired to ``derive_perpetual``.
+One controller instance owns XRP. Binance is market data only; every executor
+action is hard-wired to ``derive_perpetual``.
 """
 
 from __future__ import annotations
@@ -461,7 +460,7 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
     trading_pair: str = Field(default="XRP-USDC")
     reference_trading_pair: str = Field(default="XRP-USDT")
     asset: str = Field(default="XRP")
-    portfolio_id: str = Field(default="derive_xrp_link_800")
+    portfolio_id: str = Field(default="derive_xrp_800")
     position_mode: PositionMode = Field(default=PositionMode.ONEWAY)
     leverage: int = Field(default=1, ge=1, le=5)
 
@@ -483,7 +482,6 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
 
     binance_stale_seconds: Decimal = Field(default=Decimal("3"), gt=0)
     derive_stale_seconds: Decimal = Field(default=Decimal("3"), gt=0)
-    peer_stale_seconds: Decimal = Field(default=Decimal("5"), gt=0)
     binance_recovery_seconds: Decimal = Field(default=Decimal("3"), ge=0)
     book_depth_levels: int = Field(default=5, ge=1, le=20)
     basis_window: int = Field(default=120, ge=5, le=3600)
@@ -517,8 +515,8 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
 
     @model_validator(mode="after")
     def validate_final_architecture(self):
-        if self.asset not in {"XRP", "LINK"}:
-            raise ValueError("asset must be XRP or LINK")
+        if self.asset != "XRP":
+            raise ValueError("asset must be XRP")
         if self.connector_name != "derive_perpetual":
             raise ValueError("execution connector must be derive_perpetual")
         if self.reference_connector_name != "binance_perpetual":
@@ -579,7 +577,7 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
 
 
 class DeriveBinanceAdaptiveMM(ControllerBase):
-    """Single-asset controller; deploy XRP and LINK configs in the same bot."""
+    """Single-asset XRP controller for Derive execution and Binance reference data."""
 
     _logger = None
     _portfolio: ClassVar[dict[str, dict[str, PortfolioSnapshot]]] = {}
@@ -834,9 +832,9 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
     def _prune_reservations(self, now: float, active: dict[str, Any]) -> None:
         reservations = self._reservations.setdefault(self.config.portfolio_id, {})
         for key, reservation in list(reservations.items()):
-            # Only the owning controller can reconcile its reservation. If an
-            # asset controller stalls, peers must retain its pending exposure
-            # and fail closed instead of expiring risk they cannot observe.
+            # Only the owning controller can reconcile its reservation. A
+            # stalled controller retains its pending exposure until it resumes
+            # or the bounded safety TTL expires.
             if reservation.controller_id != self.config.id:
                 continue
             if reservation.level in active or now - reservation.created_at >= self._reservation_ttl_seconds:
@@ -878,18 +876,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         )
         self._portfolio.setdefault(self.config.portfolio_id, {})[self.config.asset] = snapshot
         return snapshot
-
-    def _peer_risk_health(self, now: float) -> tuple[bool, str, dict[str, float | None]]:
-        snapshots = self._portfolio.setdefault(self.config.portfolio_id, {})
-        ages = {
-            asset: max(0.0, now - snapshots[asset].updated_at) if asset in snapshots else None
-            for asset in ("XRP", "LINK")
-        }
-        if any(age is None for age in ages.values()):
-            return False, "MISSING", ages
-        if any(age > float(self.config.peer_stale_seconds) for age in ages.values() if age is not None):
-            return False, "STALE", ages
-        return True, "HEALTHY", ages
 
     def _record_fixed_volatility_sample(self, now: float, mid: Decimal) -> None:
         """Record returns between adjacent one-second buckets; never fill missed buckets."""
@@ -1192,7 +1178,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             with self._portfolio_lock:
                 self._prune_reservations(now, active)
                 own_snapshot = self._publish_portfolio(position, derive_mid, active, now)
-                peer_healthy, peer_state, peer_ages = self._peer_risk_health(now)
                 total_inventory, total_orders = self._portfolio_totals()
                 previews: dict[str, tuple[Decimal, str, Decimal, FillEffect]] = {}
                 for level, side, price in (
@@ -1288,9 +1273,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "block_reason": self._plan.reason,
                 "derive_snapshot_compatibility_active": DERIVE_SNAPSHOT_RACE_COMPATIBILITY_ACTIVE,
                 "risk_snapshot_updated_at": now,
-                "peer_risk_healthy": peer_healthy,
-                "peer_risk_state": peer_state,
-                "peer_risk_snapshot_age_seconds": peer_ages,
                 "pending_cancels": sorted(self._reconcile_pending_stops()),
                 "pending_creates": sorted(self._pending_create_levels()),
                 "execution_fail_closed": self._execution_fail_closed_reason is not None,
@@ -1307,8 +1289,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             }:
                 operational = OperationalState.ERROR
             self._plan = None
-            with self._portfolio_lock:
-                peer_healthy, peer_state, peer_ages = self._peer_risk_health(now)
             self.processed_data.update(
                 {
                     "asset": self.config.asset,
@@ -1317,9 +1297,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                     "desired_bid": None,
                     "desired_ask": None,
                     "block_reason": str(exc),
-                    "peer_risk_healthy": peer_healthy,
-                    "peer_risk_state": peer_state,
-                    "peer_risk_snapshot_age_seconds": peer_ages,
                     "pending_cancels": sorted(self._reconcile_pending_stops()),
                     "pending_creates": sorted(self._pending_create_levels()),
                     "execution_fail_closed": self._execution_fail_closed_reason is not None,
@@ -1587,17 +1564,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         if actions:
             return actions
 
-        with self._portfolio_lock:
-            peer_healthy, peer_state, peer_ages = self._peer_risk_health(now)
-        self.processed_data["peer_risk_state"] = peer_state
-        self.processed_data["peer_risk_snapshot_age_seconds"] = peer_ages
-        if not peer_healthy:
-            for level, (_, price) in desired.items():
-                if level not in active and price is not None:
-                    self._last_action[level] = f"PEER_RISK_{peer_state}"
-                    self.processed_data[f"{level}_size_block_reason"] = f"PEER_RISK_{peer_state}"
-            return []
-
         if pending_cancel_levels:
             self.processed_data["block_reason"] = "PENDING_CANCEL_CONFIRMATION"
             for level, (_, price) in desired.items():
@@ -1709,7 +1675,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "execution_fail_closed": self._execution_fail_closed_reason is not None,
                 "last_error": self._execution_fail_closed_reason or details.get("last_error"),
                 "diagnostics_state": details.get("diagnostics_state", "HEALTHY"),
-                "peer_health": details.get("peer_risk_state", "UNKNOWN"),
                 "feed_health": {
                     "derive": details.get("derive_freshness_state", "UNKNOWN"),
                     "binance": details.get("binance_freshness_state", "UNKNOWN"),

@@ -4,11 +4,11 @@
 
 - Confirm Docker/Hummingbot API and Condor are healthy.
 - Confirm the existing `master_account` profile exposes `derive_perpetual`.
-- Confirm Binance public `XRP-USDT` and `LINK-USDT` books are fresh.
-- Confirm Derive `XRP-USDC` and `LINK-USDC` books and native trading rules load.
-- Read Derive balance and positions; unexpected XRP/LINK exposure is a stop gate.
-- Confirm both configs say `shadow_mode: true`, `mainnet_armed: false`.
-- Confirm shared limits: 800 capital, 200 reserve, 300 cap per asset.
+- Confirm Binance public `XRP-USDT` book is fresh.
+- Confirm Derive `XRP-USDC` book and native trading rules load.
+- Read Derive balance and positions; unexpected XRP exposure is a stop gate.
+- Confirm the XRP config says `shadow_mode: true`, `mainnet_armed: false`.
+- Confirm shared limits: 800 capital, 200 reserve, 300 XRP cap.
 - Check disk space and that no stale SQLite writer from legacy research is running.
 
 ## Start
@@ -18,18 +18,18 @@ Deploy through Condor exactly as shown in `CONDOR.md`. Start the
 
 ## Monitor
 
-For 15–30 minutes verify both controller diagnostics update, data recovery
+For 15–30 minutes verify the XRP controller diagnostics update, data recovery
 hysteresis completes, state/mode transitions do not flap, desired quotes
 change, tick-aware holds occur, and mutations remain within budget. Confirm
-Hummingbot reports zero orders, fills, and newly created XRP/LINK positions.
+Hummingbot reports zero orders, fills, and newly created XRP positions.
 
 Treat a BBO touch as diagnostics only, never a fill. Markouts remain `N/A` until
 a real native fill exists; a shadow quote is not exchange execution evidence.
 
 ## Stop
 
-Use `stop_controllers` for both IDs, wait one config reload interval, then
-verify both controller states are stopped and no active executors remain. Stop
+Use `stop_controllers` for the XRP ID, wait one config reload interval, then
+verify the controller state is stopped and no active executors remain. Stop
 the health routine with its returned routine instance ID.
 
 ## Emergency

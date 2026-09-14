@@ -1,20 +1,20 @@
-# Adaptive Cross-Venue Market Maker
+# Adaptive XRP Cross-Venue Market Maker
 
-**Hummingbot Strategy V2 + Condor | XRP / LINK | Derive perpetual execution |
+**Hummingbot Strategy V2 + Condor | XRP-only | Derive perpetual execution |
 Binance perpetual reference**
 
 This is the final Agent Builders Cup architecture. The competition bot runs
 inside Hummingbot. A single reusable `derive_binance_adaptive_mm` controller is
-instantiated once for XRP and once for LINK; Condor launches, monitors, pauses,
-resumes, and stops the Hummingbot instance.
+instantiated once for XRP; Condor launches, monitors, pauses, resumes, and
+stops the Hummingbot instance.
 
 ```text
-Binance perpetual -> fair value + market state
-                           |
-Derive BBO ---------------+-> mode -> inventory override -> desired quotes
-                                                        |
-                                                        v
-Condor -> Hummingbot V2 -> OrderExecutor -> derive_perpetual -> Derive
+Binance XRP-USDT -> fair value + trend + volatility
+                              |
+Derive XRP-USDC BBO ----------+-> mode -> inventory/risk override
+                                                   |
+                                                   v
+Condor -> Hummingbot V2 -> OrderExecutor -> derive_perpetual -> Derive XRP-USDC
 ```
 
 Binance is public market data only. Every `CreateExecutorAction` is hard-wired
@@ -27,7 +27,7 @@ to `derive_perpetual`; there is no custom private REST/WebSocket execution.
 3. Observe Derive BBO and native trading rules.
 4. Select a deterministic market-making mode.
 5. Let inventory and portfolio risk override directional skew.
-6. Project each fill against signed inventory, safely resize it, and atomically reserve shared XRP/LINK risk.
+6. Project each fill against signed inventory, safely resize it, and reserve XRP risk atomically.
 7. Produce at most one post-only bid and one post-only ask.
 8. Preserve queue residency with tick-aware hold, deadband, and minimum residency.
 9. Cancel the vulnerable side immediately on a fast adverse Binance move.
@@ -49,7 +49,7 @@ is a modest maker-quote skew, never a directional position target.
 - `shadow_mode: true`
 - `mainnet_armed: false`
 - total portfolio: `800 USDC`, with `200 USDC` reserve
-- XRP cap: `300 USDC`; LINK cap: `300 USDC`
+- XRP cap: `300 USDC`
 - Derive execution only; Binance reference only
 - other assets and reference exchanges disabled
 - no automatic mainnet arming
@@ -67,7 +67,6 @@ sizing, not represented as exchange-native reduce-only orders.
 ```text
 controllers/market_making/derive_binance_adaptive_mm.py  native V2 controller
 configs/derive_binance_adaptive_mm_xrp.yml               XRP instance
-configs/derive_binance_adaptive_mm_link.yml              LINK instance
 condor/derive_mm_health.py                               read-only health routine
 docs/                                                    architecture and operations
 research/legacy/standalone_runtime/                      retired standalone runtime
@@ -95,4 +94,4 @@ The native contract probe must run inside the installed Hummingbot API image.
 See [local environment](docs/LOCAL_ENVIRONMENT.md), [Condor operations](docs/CONDOR.md),
 [runbook](docs/RUNBOOK.md), and [hackathon compliance](docs/HACKATHON_COMPLIANCE.md).
 
-Repository: [doi-doi/adaptive-cross-venue-market-maker](https://github.com/doi-doi/adaptive-cross-venue-market-maker)
+Repository: [doi-doi/adaptive-xrp-cross-venue-market-maker](https://github.com/doi-doi/adaptive-xrp-cross-venue-market-maker)

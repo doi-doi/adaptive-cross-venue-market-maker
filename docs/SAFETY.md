@@ -4,7 +4,7 @@ The committed system is shadow-only and disarmed:
 
 - `shadow_mode: true`
 - `mainnet_armed: false`
-- XRP and LINK only
+- XRP only
 - Binance perpetual is public reference data only
 - Derive perpetual is the only possible execution connector
 - at most one maker bid and one maker ask per asset
@@ -30,11 +30,10 @@ It enforces:
 - asset and portfolio open-order limits;
 - gross current inventory plus open/pending orders at or below capital minus reserve.
 
-Pending reservations reconcile when the executor becomes active. Only their
-owning controller may expire them after 30 seconds if creation fails; a stalled
-controller's peer retains its reservation and therefore fails closed. Registry
-decisions are serialized by one process-wide lock, closing the XRP/LINK
-check-then-create race.
+Pending reservations reconcile when the executor becomes active. The owning
+controller may expire them after 30 seconds if creation fails. Registry
+decisions are serialized by one process-wide lock, so a create cannot be
+duplicated while it is still becoming active.
 
 ## Position action and flips
 

@@ -3,9 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
-import threading
 import types
-from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
@@ -184,18 +182,11 @@ class Provider:
         return amount.quantize(Decimal("1"))
 
 
-def native_controller(provider=None, *, seed_peer=True, **overrides):
+def native_controller(provider=None, **overrides):
     provider = provider or Provider()
     overrides.setdefault("binance_recovery_seconds", 0)
     cfg = config(**overrides)
     instance = controller.DeriveBinanceAdaptiveMM(cfg, provider, asyncio.Queue())
-    if seed_peer:
-        peer = "LINK" if cfg.asset == "XRP" else "XRP"
-        instance._portfolio.setdefault(cfg.portfolio_id, {})[peer] = controller.PortfolioSnapshot(
-            position_amount=Decimal("0"),
-            mark_price=Decimal("1"),
-            updated_at=provider.now,
-        )
     return instance, provider
 
 
@@ -204,10 +195,9 @@ def reset_shared_portfolio_state():
     controller.DeriveBinanceAdaptiveMM._reset_shared_state_for_tests()
 
 
-def test_xrp_and_link_are_the_only_valid_configs():
+def test_xrp_is_the_only_valid_config():
     assert config("XRP").asset == "XRP"
-    assert config("LINK").asset == "LINK"
-    with pytest.raises(ValueError, match="XRP or LINK"):
+    with pytest.raises(ValueError, match="asset must be XRP"):
         config("SOL")
 
 
@@ -378,59 +368,17 @@ def test_armed_create_actions_are_derive_only_and_one_per_side():
     assert {action.executor_config.position_action for action in actions} == {PositionAction.OPEN}
 
 
-def test_missing_peer_risk_snapshot_blocks_new_creates():
-    instance, _ = native_controller(seed_peer=False, shadow_mode=False, mainnet_armed=True)
+def test_xrp_can_create_without_a_peer_controller():
+    instance, _ = native_controller(shadow_mode=False, mainnet_armed=True)
     asyncio.run(instance.update_processed_data())
+    actions = instance.determine_executor_actions()
+    assert len(actions) == 2
+    assert all(isinstance(action, CreateExecutorAction) for action in actions)
+    assert "peer" not in " ".join(instance.processed_data).lower()
 
-    assert instance.determine_executor_actions() == []
-    assert instance.processed_data["peer_risk_state"] == "MISSING"
-    assert instance._last_action == {"bid": "PEER_RISK_MISSING", "ask": "PEER_RISK_MISSING"}
 
-
-def test_stale_peer_risk_snapshot_blocks_then_recovers():
+def test_safety_cancel_still_works_without_a_peer_controller():
     instance, provider = native_controller(
-        shadow_mode=False,
-        mainnet_armed=True,
-        peer_stale_seconds=2,
-    )
-    asyncio.run(instance.update_processed_data())
-    peer = "LINK"
-    instance._portfolio[instance.config.portfolio_id][peer] = controller.PortfolioSnapshot(
-        position_amount=Decimal("0"),
-        mark_price=Decimal("1"),
-        updated_at=provider.now - 3,
-    )
-
-    assert instance.determine_executor_actions() == []
-    assert instance.processed_data["peer_risk_state"] == "STALE"
-
-    instance._portfolio[instance.config.portfolio_id][peer] = controller.PortfolioSnapshot(
-        position_amount=Decimal("0"),
-        mark_price=Decimal("1"),
-        updated_at=provider.now,
-    )
-    assert len(instance.determine_executor_actions()) == 2
-    assert instance.processed_data["peer_risk_state"] == "HEALTHY"
-
-
-def test_shadow_controllers_publish_healthy_peer_risk_diagnostics():
-    xrp, _ = native_controller(Provider(), seed_peer=False, id="xrp", asset="XRP")
-    link, _ = native_controller(Provider(), seed_peer=False, id="link", asset="LINK")
-
-    asyncio.run(xrp.update_processed_data())
-    assert xrp.processed_data["peer_risk_state"] == "MISSING"
-    asyncio.run(link.update_processed_data())
-    asyncio.run(xrp.update_processed_data())
-
-    assert xrp.processed_data["peer_risk_healthy"] is True
-    assert link.processed_data["peer_risk_healthy"] is True
-    assert xrp.processed_data["peer_risk_state"] == "HEALTHY"
-    assert link.processed_data["peer_risk_state"] == "HEALTHY"
-
-
-def test_safety_cancel_still_works_when_peer_risk_snapshot_is_missing():
-    instance, provider = native_controller(
-        seed_peer=False,
         shadow_mode=False,
         mainnet_armed=True,
         manual_kill_switch=True,
@@ -584,15 +532,15 @@ def test_refresh_deadband_residency_tick_hold_and_adverse_override():
     assert controller.should_refresh(desired_price=Decimal("100.00"), age_seconds=Decimal("1"), **(base | {"fast_adverse": True}))[1] == "FAST_ADVERSE_MOVE"
 
 
-def test_shared_800_capital_defaults_cover_two_assets():
-    xrp, link = config("XRP"), config("LINK")
-    assert xrp.portfolio_capital_quote == link.portfolio_capital_quote == Decimal("800")
-    assert xrp.total_amount_quote == link.total_amount_quote == Decimal("800")
-    assert xrp.asset_cap_quote + link.asset_cap_quote <= xrp.portfolio_capital_quote - xrp.reserve_quote
+def test_xrp_portfolio_defaults_fit_single_asset_capital():
+    xrp = config()
+    assert xrp.portfolio_capital_quote == Decimal("800")
+    assert xrp.total_amount_quote == Decimal("800")
+    assert xrp.asset_cap_quote <= xrp.portfolio_capital_quote - xrp.reserve_quote
     assert xrp.order_amount_quote * 2 <= xrp.max_asset_open_order_quote
 
 
-def test_shared_portfolio_rejects_inconsistent_terms_and_excess_asset_caps():
+def test_shared_portfolio_rejects_inconsistent_terms():
     portfolio_id = "test_inconsistent_terms"
     native_controller(portfolio_id=portfolio_id, asset_cap_quote=Decimal("300"))
     with pytest.raises(ValueError, match="identical capital and reserve"):
@@ -602,28 +550,19 @@ def test_shared_portfolio_rejects_inconsistent_terms_and_excess_asset_caps():
             total_amount_quote=Decimal("900"),
         )
 
-    portfolio_id = "test_excess_caps"
-    native_controller(portfolio_id=portfolio_id, asset_cap_quote=Decimal("350"))
-    provider = Provider()
-    link_config = config(
-        "LINK",
-        portfolio_id=portfolio_id,
-        asset_cap_quote=Decimal("300"),
-        max_asset_inventory_quote=Decimal("180"),
-    )
-    with pytest.raises(ValueError, match="shared asset caps"):
-        controller.DeriveBinanceAdaptiveMM(link_config, provider, asyncio.Queue())
-
-
-def test_committed_xrp_and_link_configs_are_shadow_only_and_share_one_portfolio():
+def test_committed_config_is_xrp_only_shadow_surface():
     config_dir = Path(__file__).parents[1] / "configs"
-    rows = [yaml.safe_load((config_dir / f"derive_binance_adaptive_mm_{asset}.yml").read_text()) for asset in ("xrp", "link")]
-    assert {row["asset"] for row in rows} == {"XRP", "LINK"}
-    assert {row["portfolio_id"] for row in rows} == {"derive_xrp_link_800"}
-    assert all(row["shadow_mode"] is True and row["mainnet_armed"] is False for row in rows)
-    assert all(row["connector_name"] == "derive_perpetual" for row in rows)
-    assert all(row["reference_connector_name"] == "binance_perpetual" for row in rows)
-    assert sum(row["order_amount_quote"] * 2 for row in rows) <= rows[0]["max_total_open_order_quote"]
+    row = yaml.safe_load((config_dir / "derive_binance_adaptive_mm_xrp.yml").read_text())
+    assert row["asset"] == "XRP"
+    assert row["portfolio_id"] == "derive_xrp_800"
+    assert row["shadow_mode"] is True and row["mainnet_armed"] is False
+    assert row["connector_name"] == "derive_perpetual"
+    assert row["reference_connector_name"] == "binance_perpetual"
+    assert sorted(path.name for path in config_dir.glob("derive_binance_adaptive_mm_*.yml")) == [
+        "derive_binance_adaptive_mm_xrp.yml"
+    ]
+    bot = yaml.safe_load((config_dir / "v2_with_controllers.yml").read_text())
+    assert bot["controllers_config"] == ["derive_binance_adaptive_mm_xrp.yml"]
 
 
 def test_native_minimum_size_blocks_quote_instead_of_submitting_invalid_order():
@@ -678,10 +617,9 @@ def _set_position(provider, pair, amount):
 def test_inventory_increasing_bid_is_resized_to_asset_capacity():
     provider = Provider()
     mid = (provider.books["derive_perpetual"].bid.price + provider.books["derive_perpetual"].ask.price) / 2
-    _set_position(provider, "LINK-USDC", Decimal("120") / mid)
+    _set_position(provider, "XRP-USDC", Decimal("120") / mid)
     instance, _ = native_controller(
         provider,
-        asset="LINK",
         order_amount_quote=Decimal("125"),
         max_asset_open_order_quote=Decimal("260"),
         shadow_mode=False,
@@ -797,58 +735,6 @@ def test_asset_cap_includes_position_active_opposite_order_and_new_quote():
     assert bid.executor_config.amount * bid.executor_config.price <= Decimal("20")
 
 
-def test_shared_controllers_reserve_open_order_cap_atomically():
-    xrp, _ = native_controller(
-        Provider(), id="xrp", asset="XRP", max_total_open_order_quote=Decimal("60"), shadow_mode=False, mainnet_armed=True
-    )
-    link, _ = native_controller(
-        Provider(),
-        id="link",
-        asset="LINK",
-        order_amount_quote=Decimal("25"),
-        max_total_open_order_quote=Decimal("60"),
-        shadow_mode=False,
-        mainnet_armed=True,
-    )
-    asyncio.run(xrp.update_processed_data())
-    asyncio.run(link.update_processed_data())
-    barrier = threading.Barrier(2)
-
-    def decide(instance):
-        barrier.wait()
-        return instance.determine_executor_actions()
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        batches = list(pool.map(decide, (xrp, link)))
-    actions = [action for batch in batches for action in batch]
-    reserved = sum(action.executor_config.amount * action.executor_config.price for action in actions)
-    assert reserved <= Decimal("60")
-    assert len(actions) >= 2
-
-
-def test_shared_reservations_cannot_exceed_capital_minus_reserve():
-    xrp_provider, link_provider = Provider(), Provider()
-    mid = (xrp_provider.books["derive_perpetual"].bid.price + xrp_provider.books["derive_perpetual"].ask.price) / 2
-    _set_position(xrp_provider, "XRP-USDC", Decimal("280") / mid)
-    _set_position(link_provider, "LINK-USDC", Decimal("280") / mid)
-    common = {
-        "asset_cap_quote": Decimal("300"),
-        "max_asset_inventory_quote": Decimal("300"),
-        "max_asset_open_order_quote": Decimal("260"),
-        "max_total_inventory_quote": Decimal("600"),
-        "max_total_open_order_quote": Decimal("700"),
-        "shadow_mode": False,
-        "mainnet_armed": True,
-    }
-    xrp, _ = native_controller(xrp_provider, id="xrp", asset="XRP", **common)
-    link, _ = native_controller(link_provider, id="link", asset="LINK", **common)
-    asyncio.run(xrp.update_processed_data())
-    asyncio.run(link.update_processed_data())
-    actions = xrp.determine_executor_actions() + link.determine_executor_actions()
-    reserved = sum(action.executor_config.amount * action.executor_config.price for action in actions)
-    assert Decimal("560") + reserved <= Decimal("600")
-
-
 def test_pending_create_reservation_prevents_duplicate_create():
     instance, _ = native_controller(Provider(), id="xrp", shadow_mode=False, mainnet_armed=True)
     asyncio.run(instance.update_processed_data())
@@ -861,52 +747,25 @@ def test_pending_create_reservation_prevents_duplicate_create():
     instance.market_data_provider.now += instance._reservation_ttl_seconds + 1
     instance.market_data_provider.books["derive_perpetual"].last_diff_uid += 1
     instance.market_data_provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
-    instance._portfolio[instance.config.portfolio_id]["LINK"] = controller.PortfolioSnapshot(
-        position_amount=Decimal("0"),
-        mark_price=Decimal("1"),
-        updated_at=instance.market_data_provider.now,
-    )
     asyncio.run(instance.update_processed_data())
     assert len(instance.determine_executor_actions()) == 2
 
 
-def test_peer_cannot_expire_a_stalled_controllers_reservation():
-    xrp_provider, link_provider = Provider(), Provider()
-    xrp, _ = native_controller(xrp_provider, id="xrp", asset="XRP", shadow_mode=False, mainnet_armed=True)
-    link, _ = native_controller(link_provider, id="link", asset="LINK", shadow_mode=False, mainnet_armed=True)
-    asyncio.run(xrp.update_processed_data())
-    asyncio.run(link.update_processed_data())
-    xrp.determine_executor_actions()
-    link_provider.now += xrp._reservation_ttl_seconds + 1
-    link.determine_executor_actions()
-    reservations = link._reservations[link.config.portfolio_id]
-    assert (xrp.config.id, "bid") in reservations
-    assert (xrp.config.id, "ask") in reservations
-
-
-def test_projected_portfolio_inventory_limit_resizes_second_asset():
+def test_projected_portfolio_inventory_limit_resizes_xrp_quote():
     xrp_provider = Provider()
     mid = (xrp_provider.books["derive_perpetual"].bid.price + xrp_provider.books["derive_perpetual"].ask.price) / 2
     _set_position(xrp_provider, "XRP-USDC", Decimal("150") / mid)
-    xrp, _ = native_controller(
+    instance, _ = native_controller(
         xrp_provider,
-        asset="XRP",
         max_total_inventory_quote=Decimal("200"),
-        shadow_mode=False,
-        mainnet_armed=True,
-    )
-    link, _ = native_controller(
-        Provider(),
-        asset="LINK",
+        max_asset_inventory_quote=Decimal("300"),
         order_amount_quote=Decimal("125"),
         max_asset_open_order_quote=Decimal("260"),
-        max_total_inventory_quote=Decimal("200"),
         shadow_mode=False,
         mainnet_armed=True,
     )
-    asyncio.run(xrp.update_processed_data())
-    asyncio.run(link.update_processed_data())
-    actions = link.determine_executor_actions()
+    asyncio.run(instance.update_processed_data())
+    actions = instance.determine_executor_actions()
     bid = next(action for action in actions if action.executor_config.level_id == "bid")
     assert bid.executor_config.amount * bid.executor_config.price <= Decimal("50")
 
@@ -914,8 +773,7 @@ def test_projected_portfolio_inventory_limit_resizes_second_asset():
 def test_portfolio_projection_uses_conservative_active_and_pending_prices():
     instance, _ = native_controller(Provider(), id="xrp", asset="XRP")
     instance._portfolio[instance.config.portfolio_id] = {
-        "XRP": controller.PortfolioSnapshot(position_amount=Decimal("0"), mark_price=Decimal("1")),
-        "LINK": controller.PortfolioSnapshot(
+        "XRP": controller.PortfolioSnapshot(
             position_amount=Decimal("0"),
             mark_price=Decimal("1"),
             open_bid_amount=Decimal("100"),
@@ -1053,7 +911,7 @@ def test_derive_reject_latches_fail_closed_and_preserves_diagnostics():
     details = instance.get_custom_info()
     assert details["last_error"]
     assert details["pending_cancels"] == []
-    assert details["peer_health"] == "HEALTHY"
+    assert "peer_health" not in details
 
 
 def test_nonce_reject_latches_fail_closed_without_new_creates():

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "derive-multi-asset-adaptive-mm"
 version = "1.0.0"
-description = "Hummingbot V2 XRP/LINK adaptive market maker for Derive with Binance reference data"
+description = "Hummingbot V2 XRP adaptive market maker for Derive with Binance reference data"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

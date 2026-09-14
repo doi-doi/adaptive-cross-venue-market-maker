@@ -10,9 +10,8 @@ The permanent ownership boundary is:
 | Hummingbot V2 | connectors, throttling, quantization, executor lifecycle, orders, positions, PnL |
 | Condor | deploy, status, health, pause/resume/stop, alerts |
 
-The controller is deliberately single-asset and reusable. XRP and LINK are two
-configs in one `v2_with_controllers` bot and share `portfolio_id` plus identical
-portfolio ceilings. No controller action may target Binance.
+The controller is deliberately single-asset and configured only for XRP in the
+competition bot. No controller action may target Binance.
 
 The runtime uses Hummingbot's `binance_perpetual_paper_trade` connector as a
 credentialless wrapper around the native Binance perpetual public order-book
@@ -43,10 +42,9 @@ markouts; use recorded BBO replay or native shadow mode for those questions.
 Before returning a create action, the controller signs the proposed fill,
 projects the resulting position, applies asset and portfolio caps, quantizes a
 safe residual size with Derive's native rule, and records a pending reservation.
-Both XRP and LINK use one locked class-level registry keyed by `portfolio_id`,
-so a second controller cycle sees the first controller's not-yet-active action.
-Active bid, active ask, pending creates, current inventory, portfolio inventory,
-and capital minus reserve are all part of the decision.
+XRP uses one locked class-level registry keyed by `portfolio_id`. Active bid,
+active ask, pending creates, current inventory, portfolio inventory, and capital
+minus reserve are all part of the decision.
 
 Market-data transport freshness comes from Hummingbot 2.16.0 tracker message
 metrics when available. BBO-change age is retained as a separate activity

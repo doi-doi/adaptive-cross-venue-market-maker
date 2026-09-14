@@ -16,13 +16,13 @@ Current rules: https://www.botcamp.xyz/hackathons/agent-builders-cup-1
 |---|---|---|
 | Hummingbot V2 Controller or Condor Agent | PASS | Native `ControllerBase` controller plus Condor routine |
 | Derive sponsor alignment | PASS | `derive_perpetual` is the sole executor target |
-| Runs inside Hummingbot | PASS | Native executor actions/configs plus local dual-controller runtime |
+| Runs inside Hummingbot | PASS | Native executor actions/config plus local XRP runtime |
 | Official image contract probe | PASS | Import, instantiate, process books, calculate quotes, and emit zero shadow actions in CI run `34702709151` |
 | Condor operation/monitoring | PASS | local bot control plus running read-only health routine |
 | Exact application submitted | NOT VERIFIED | External entrant/application state was not inspected |
 | 48-hour live final readiness | NOT VERIFIED | No live trading or long validation authorized/performed |
-| Current local native import | PASS | official image loaded controller and both native public feeds |
-| 15–30 minute shadow validation | PASS | 16m53s wall-clock run; final controller uptime 961.48s; evidence in `submission/SHADOW_VALIDATION_20260912.md` |
+| Current local native import | PASS | official image loaded the XRP controller and both native public feeds |
+| 15–30 minute shadow validation | PASS | prior evidence is retained as historical; rerun the XRP-only validation for this final surface |
 
 No PASS above is a profitability, exchange-fill, or competition-selection
 claim.

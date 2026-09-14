@@ -24,9 +24,8 @@ exchange mutation was performed.
 | Existing account reference | credentials profile `master_account` contains a `derive_perpetual` connector file; secret values were not copied or committed |
 
 A retained public-metadata snapshot from 2026-09-10 recorded XRP tick `0.00001`,
-amount step `0.1`, minimum amount `10`; LINK tick `0.0001`, amount step `0.001`,
-minimum amount `10`. Those values are time-sensitive evidence, not hardcoded
-rules. The controller reads the current native rules, quantizes both fields,
+amount step `0.1`, and minimum amount `10`. Those values are time-sensitive
+evidence, not hardcoded rules. The controller reads the current native rules, quantizes both fields,
 and pauses the side when its configured order cannot meet the native minimum.
 
 The local Hummingbot API and Condor checkouts were already dirty and behind
@@ -60,7 +59,6 @@ controllers/market_making/derive_binance_adaptive_mm.py
   -> hummingbot-api/bots/controllers/market_making/derive_binance_adaptive_mm.py
 
 configs/derive_binance_adaptive_mm_xrp.yml
-configs/derive_binance_adaptive_mm_link.yml
   -> hummingbot-api/bots/conf/controllers/
 
 condor/derive_mm_health.py

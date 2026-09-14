@@ -1,123 +1,46 @@
-# ADAPTIVE CROSS-VENUE MARKET MAKER — FINAL STATUS
+# Final submission status
 
-## Framework
+## Identity
 
-- Hummingbot version: `2.16.0`
-- Condor version: commit `11198d688a1c2082d5ed538f3e647fed3a405d8d`
-- Controller: `derive_binance_adaptive_mm`
-- Controller base: `ControllerBase`
-- Executor: native `OrderExecutorConfig`, `ExecutionStrategy.LIMIT_MAKER`
+- Title: **Adaptive XRP Cross-Venue Market Maker**
+- Active controller: `derive_binance_adaptive_mm_xrp`
+- Active execution market: Derive `XRP-USDC`
+- Reference market: Binance `XRP-USDT` (public data only)
+- `shadow_mode: true`; `mainnet_armed: false`
 
-## Active assets
+Summary: Adaptive XRP perpetual market-making strategy for Derive using
+Binance XRP perpetual market data as a real-time fair-value and market-state
+reference. The strategy dynamically adjusts quote bias and risk based on trend,
+volatility, inventory, and cross-venue conditions while maintaining strict
+execution and exposure controls.
 
-- XRP: ENABLED
-- LINK: ENABLED
-- Others: DISABLED
+Markets: execution venue Derive Perpetuals (`XRP-USDC`); reference venue Binance
+Perpetuals (`XRP-USDT`). Binance is market data only; all executable orders are
+routed exclusively to Derive through Hummingbot's native `derive_perpetual`
+connector.
 
-## Reference and execution
+## Safety contract
 
-- Binance perpetual only: PASS
-- Binance stale => pause: PASS
-- Derive connector: `derive_perpetual`
-- Existing Derive connection reused: YES (`master_account`)
-- Native Hummingbot execution: YES
-- Direct custom execution: NO
+- Self-cross guard, cancel-confirm-before-create, shutdown-state protection,
+  native-price normalization, unique Derive nonce, and fail-closed rejection
+  handling are preserved.
+- Position mapping is `INCREASE_SAME_DIRECTION -> OPEN`,
+  `FLIP_DIRECTION -> OPEN`, `REDUCE -> CLOSE`, and `FLATTEN -> CLOSE`.
+- Hummingbot 2.16.0 still sends `reduce_only: false`; `CLOSE` is not claimed as
+  native reduce-only behavior.
+- Position flips remain disabled by default and projected inventory/open-order
+  protections remain active.
+- Fixed-time one-second Binance volatility sampling records unchanged fresh
+  prices as zero returns and pauses without synthesis when stale.
 
-## Strategy state
+## Deferred or unsupported
 
-- NORMAL -> NEUTRAL: PASS
-- UP_TREND -> LONG_BIAS: PASS
-- DOWN_TREND -> SHORT_BIAS: PASS
-- HIGH_VOL -> DEFENSIVE: PASS
-- EXTREME -> PAUSED: PASS
-- State hysteresis: PASS
-- Inventory override: PASS
-
-## Quote control and safety
-
-- One bid + one ask: PASS
-- Deadband: PASS
-- Minimum residency: PASS
-- Tick-aware hold: PASS
-- Fast adverse protection: PASS
-- Action governor: PASS
-- Shared XRP/LINK peer freshness: PASS
-- Missing/stale peer fail-closed: PASS
-- PositionAction semantics: REDUCE/FLATTEN -> CLOSE, INCREASE/FLIP -> OPEN: PASS
-- Fixed-time volatility sampling: PASS
-- Position flips default: DISABLED
-- Shadow default: TRUE
-- Mainnet armed default: FALSE
-- Live trading started: NO
-
-## Capital and final parameters
-
-- Portfolio: 800 USDC
-- Reserve: 200 USDC
-- XRP allocation cap: 300 USDC
-- LINK allocation cap: 300 USDC
-- XRP order amount: 25 USDC
-- LINK order amount: 125 USDC
-- XRP max asset inventory: 180 USDC
-- LINK max asset inventory: 180 USDC
-- Normal refresh deadband: 3 bps
-- Minimum normal quote residency: 10 seconds
-
-## Condor
-
-- Bot launch: PASS
-- Health routine: `derive_mm_health`
-- Overall health: PASS
-- BBO monitor: PASS
-- Market state: PASS
-- MM mode: PASS
-- Inventory: PASS
-- Quotes: PASS
-- Positions: PASS
-- PnL: PASS
-- Volume: PASS
-- Markout availability: PASS (`N/A` with zero fills is expected)
-- Alerts: PASS
-- Pause/stop: PASS
+Native account equity and realized PnL remain `N/A` when unavailable. No live
+trading or parameter search was performed.
 
 ## Verification
 
-- `pytest -q`: 68 passed
-- Ruff: PASS
-- Pinned Hummingbot 2.16.0 contract probe: PASS
-- GitHub Actions on merged main: PASS
-- SQLite lock errors: 0
-- Controller errors: 0
-
-## Final shadow validation
-
-- Duration: 13 minutes
-- XRP: PASS
-- LINK: PASS
-- Real orders: 0
-- Real positions: 0
-- Peer risk: healthy
-- Derive feed: healthy
-- Binance feed: healthy
-- Condor: healthy
-
-Earlier hardening evidence also includes a 3,604-second clean XRP/LINK shadow run with Condor healthy, zero controller errors, zero SQLite lock errors, zero real orders, and zero real positions.
-
-## GitHub
-
-- Repo: https://github.com/doi-doi/adaptive-cross-venue-market-maker
-- Default branch: `main`
-- PR #2 live-safety hardening: MERGED
-- Merge commit: `ded8365d74201e6727947f39bab353d430c82edd`
-
-## Known limitations
-
-- Hummingbot 2.16.0 Derive connector does not provide true exchange-native reduce-only payload behavior.
-- Reliable native account equity and account realized PnL are not exposed, so those values remain `N/A` rather than being inferred.
-- Shadow validation proves wiring, safety behavior, and runtime health; it does not prove profitability or live fill quality.
-
-## Completion
-
-Architecture is frozen. Final parameter sanity pass is complete. No further strategy redesign or parameter optimization is required before submission.
-
-FINAL STATUS: SUBMISSION READY
+The final XRP-only surface is validated by the repository test suite, Ruff,
+competition-surface validator, and the pinned Hummingbot 2.16.0 contract probe.
+Native shadow validation is the required runtime evidence; live canary remains
+an operator-gated follow-up.
