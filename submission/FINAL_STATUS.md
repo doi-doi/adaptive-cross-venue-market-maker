@@ -1,4 +1,4 @@
-# DERIVE ADAPTIVE MM FINAL ARCHITECTURE BUILD COMPLETE
+# ADAPTIVE CROSS-VENUE MARKET MAKER — FINAL STATUS
 
 ## Framework
 
@@ -14,18 +14,12 @@
 - LINK: ENABLED
 - Others: DISABLED
 
-## Reference
+## Reference and execution
 
 - Binance perpetual only: PASS
 - Binance stale => pause: PASS
-- Bybit: NOT USED
-- OKX: NOT USED
-- Bitget: NOT USED
-
-## Execution
-
 - Derive connector: `derive_perpetual`
-- Existing Condor Derive connection reused: YES (`master_account`)
+- Existing Derive connection reused: YES (`master_account`)
 - Native Hummingbot execution: YES
 - Direct custom execution: NO
 
@@ -39,7 +33,7 @@
 - State hysteresis: PASS
 - Inventory override: PASS
 
-## Quote control
+## Quote control and safety
 
 - One bid + one ask: PASS
 - Deadband: PASS
@@ -47,14 +41,27 @@
 - Tick-aware hold: PASS
 - Fast adverse protection: PASS
 - Action governor: PASS
+- Shared XRP/LINK peer freshness: PASS
+- Missing/stale peer fail-closed: PASS
+- PositionAction semantics: REDUCE/FLATTEN -> CLOSE, INCREASE/FLIP -> OPEN: PASS
+- Fixed-time volatility sampling: PASS
+- Position flips default: DISABLED
+- Shadow default: TRUE
+- Mainnet armed default: FALSE
+- Live trading started: NO
 
-## Capital
+## Capital and final parameters
 
 - Portfolio: 800 USDC
-- Shared portfolio limit: PASS
-- XRP cap: 300 USDC
-- LINK cap: 300 USDC
 - Reserve: 200 USDC
+- XRP allocation cap: 300 USDC
+- LINK allocation cap: 300 USDC
+- XRP order amount: 25 USDC
+- LINK order amount: 125 USDC
+- XRP max asset inventory: 180 USDC
+- LINK max asset inventory: 180 USDC
+- Normal refresh deadband: 3 bps
+- Minimum normal quote residency: 10 seconds
 
 ## Condor
 
@@ -69,53 +76,48 @@
 - Positions: PASS
 - PnL: PASS
 - Volume: PASS
-- Markout: PASS (`N/A` with zero fills is correct)
+- Markout availability: PASS (`N/A` with zero fills is expected)
 - Alerts: PASS
 - Pause/stop: PASS
 
-## Backtest
+## Verification
 
-- Native Hummingbot backtest compatible: PARTIAL
-- Microstructure replay: AVAILABLE under `research/`
+- `pytest -q`: 68 passed
+- Ruff: PASS
+- Pinned Hummingbot 2.16.0 contract probe: PASS
+- GitHub Actions on merged main: PASS
+- SQLite lock errors: 0
+- Controller errors: 0
 
-The installed native V2 backtester is suitable for controller logic and coarse
-parameter comparisons but does not reproduce simultaneous Derive and Binance
-BBO streams. The live design was not distorted to fit a candle-only engine.
+## Final shadow validation
 
-## Shadow validation
-
-- Instance: `derive-binance-adaptive-mm-shadow-final-20260912-224929`
-- Duration: 16m53s wall clock; 961.48s controller uptime at final capture
+- Duration: 13 minutes
 - XRP: PASS
 - LINK: PASS
 - Real orders: 0
 - Real positions: 0
-- Executors/fills: 0 / 0
-- Controller errors: 0
-- SQLite: 204800 bytes, `integrity_check=ok`, no lock crash
-- Condor report: `reports/20260912_224953_derive_xrplink_adaptive_mm_health_9e314a.html`
-- Shutdown: STOPPED and ARCHIVED, container removed
+- Peer risk: healthy
+- Derive feed: healthy
+- Binance feed: healthy
+- Condor: healthy
+
+Earlier hardening evidence also includes a 3,604-second clean XRP/LINK shadow run with Condor healthy, zero controller errors, zero SQLite lock errors, zero real orders, and zero real positions.
 
 ## GitHub
 
 - Repo: https://github.com/doi-doi/adaptive-cross-venue-market-maker
-- Branch: `codex/hummingbot-condor-final`
-- Validated runtime code commit: `682612b`
-- Push: PASS
-- PR: https://github.com/doi-doi/adaptive-cross-venue-market-maker/pull/1
+- Default branch: `main`
+- PR #2 live-safety hardening: MERGED
+- Merge commit: `ded8365d74201e6727947f39bab353d430c82edd`
 
-## Safety
+## Known limitations
 
-- Shadow default: TRUE
-- Mainnet armed default: FALSE
-- Live trading started: NO
+- Hummingbot 2.16.0 Derive connector does not provide true exchange-native reduce-only payload behavior.
+- Reliable native account equity and account realized PnL are not exposed, so those values remain `N/A` rather than being inferred.
+- Shadow validation proves wiring, safety behavior, and runtime health; it does not prove profitability or live fill quality.
 
-## Next step
+## Completion
 
-Do not change architecture. The next research phase is parameter optimization
-only: refresh deadband, minimum quote residency, market-state thresholds, XRP
-order size, LINK order size, inventory caps, and XRP/LINK capital allocation,
-using native Hummingbot backtesting where appropriate, recorded BBO replay, and
-native shadow mode.
+Architecture is frozen. Final parameter sanity pass is complete. No further strategy redesign or parameter optimization is required before submission.
 
-FINAL STATUS: PASS
+FINAL STATUS: SUBMISSION READY
