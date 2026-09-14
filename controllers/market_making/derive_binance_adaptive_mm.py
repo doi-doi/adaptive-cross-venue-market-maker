@@ -16,9 +16,10 @@ from collections import deque
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
+from functools import wraps
 from itertools import islice
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from typing import Any, ClassVar
 
 from hummingbot.core.data_type.common import MarketDict, PositionAction, PositionMode, TradeType
@@ -108,6 +109,151 @@ def _install_derive_snapshot_race_compatibility() -> bool:
 
 
 DERIVE_SNAPSHOT_RACE_COMPATIBILITY_ACTIVE = _install_derive_snapshot_race_compatibility()
+
+
+_derive_nonce_lock = Lock()
+_last_derive_action_nonce = 0
+
+
+def _next_unique_derive_nonce(candidate: int) -> int:
+    """Make a Derive action nonce strictly increasing within this process."""
+    global _last_derive_action_nonce
+    with _derive_nonce_lock:
+        unique = max(int(candidate), _last_derive_action_nonce + 1)
+        _last_derive_action_nonce = unique
+        return unique
+
+
+def _nonce_shape_is_affected(auth_class: type[Any], web_utils_module: Any) -> bool:
+    """Recognize only the audited 2.16.0 nonce implementation."""
+    try:
+        module = inspect.getmodule(auth_class)
+        sign_source = inspect.getsource(auth_class.sign)
+        nonce_source = inspect.getsource(web_utils_module.get_action_nonce)
+        return bool(
+            module
+            and _is_hummingbot_2160(module.__file__ or "")
+            and "nonce=get_action_nonce()" in sign_source
+            and "nonce_iter: int = 0" in nonce_source
+            and "return int(str(utc_now_ms()) + str(nonce_iter))" in nonce_source
+        )
+    except (AttributeError, OSError, TypeError):
+        return False
+
+
+def _install_derive_nonce_compatibility() -> bool:
+    """Use a process-unique nonce for the audited Hummingbot 2.16.0 connector.
+
+    Hummingbot 2.16.0 calls ``get_action_nonce()`` with its default zero suffix.
+    Two concurrent authenticated actions in one millisecond therefore sign the
+    same action nonce.  This shim changes only that audited call path and leaves
+    all request signing and order execution in the native connector.
+    """
+    try:
+        from hummingbot.connector.derivative.derive_perpetual import derive_perpetual_auth as auth_module
+        from hummingbot.connector.derivative.derive_perpetual import derive_perpetual_web_utils as web_utils_module
+        from hummingbot.connector.derivative.derive_perpetual.derive_perpetual_auth import DerivePerpetualAuth
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+    current = getattr(auth_module, "get_action_nonce", None)
+    if getattr(current, "_adaptive_mm_nonce_compatibility", False):
+        return True
+    if not _nonce_shape_is_affected(DerivePerpetualAuth, web_utils_module):
+        return False
+    original = current
+
+    @wraps(original)
+    def unique_action_nonce(nonce_iter: int | None = None) -> int:
+        # Passing None selects the native random suffix instead of the affected
+        # default zero suffix.  The monotonic floor also covers same-ms races.
+        candidate = original(None if nonce_iter in (None, 0) else nonce_iter)
+        return _next_unique_derive_nonce(candidate)
+
+    unique_action_nonce._adaptive_mm_nonce_compatibility = True
+    auth_module.get_action_nonce = unique_action_nonce
+    web_utils_module.get_action_nonce = unique_action_nonce
+    logging.getLogger(__name__).warning(
+        "Activated guarded Hummingbot 2.16.0 Derive nonce compatibility shim"
+    )
+    return True
+
+
+DERIVE_NONCE_COMPATIBILITY_ACTIVE = _install_derive_nonce_compatibility()
+
+
+def _order_shape_is_affected(derive_class: type[Any]) -> bool:
+    """Recognize the 2.16.0 Derive order-price/rejection path under audit."""
+    try:
+        module = inspect.getmodule(derive_class)
+        source = inspect.getsource(derive_class._place_order)
+        return bool(
+            module
+            and _is_hummingbot_2160(module.__file__ or "")
+            and 'new_price = float(f"{price:.4g}")' in source
+            and '"Self-crossing disallowed"' in source
+            and '"reduce_only": False' in source
+        )
+    except (AttributeError, OSError, TypeError):
+        return False
+
+
+def _remember_derive_order_error(connector: Any, message: Any) -> None:
+    connector._adaptive_mm_last_order_error = str(message)
+    connector._adaptive_mm_last_order_error_at = time.time()
+
+
+def _install_derive_order_rejection_compatibility() -> bool:
+    """Normalize the audited 2.16.0 Derive rejection path without replacing it."""
+    try:
+        from hummingbot.connector.derivative.derive_perpetual import derive_perpetual_constants as constants
+        from hummingbot.connector.derivative.derive_perpetual.derive_perpetual_derivative import (
+            DerivePerpetualDerivative,
+        )
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+    current_place = DerivePerpetualDerivative._place_order
+    if getattr(current_place, "_adaptive_mm_order_compatibility", False):
+        return True
+    if not _order_shape_is_affected(DerivePerpetualDerivative):
+        return False
+
+    current_api_post = DerivePerpetualDerivative._api_post
+
+    @wraps(current_api_post)
+    async def capture_order_error(self: Any, *args: Any, **kwargs: Any):
+        result = await current_api_post(self, *args, **kwargs)
+        path = kwargs.get("path_url") or (args[0] if args else None)
+        if path == constants.CREATE_ORDER_URL and isinstance(result, dict) and "error" in result:
+            error = result.get("error") or {}
+            _remember_derive_order_error(self, error.get("message") or error.get("data") or error)
+        return result
+
+    @wraps(current_place)
+    async def guarded_place_order(self: Any, *args: Any, **kwargs: Any):
+        try:
+            result = await current_place(self, *args, **kwargs)
+        except Exception as exc:
+            _remember_derive_order_error(self, exc)
+            raise
+        if result is None:
+            reason = getattr(self, "_adaptive_mm_last_order_error", None) or "Derive order placement returned no result"
+            _remember_derive_order_error(self, reason)
+            raise OSError(str(reason))
+        return result
+
+    capture_order_error._adaptive_mm_order_api_compatibility = True
+    guarded_place_order._adaptive_mm_order_compatibility = True
+    DerivePerpetualDerivative._api_post = capture_order_error
+    DerivePerpetualDerivative._place_order = guarded_place_order
+    logging.getLogger(__name__).warning(
+        "Activated guarded Hummingbot 2.16.0 Derive order rejection compatibility shim"
+    )
+    return True
+
+
+DERIVE_ORDER_REJECTION_COMPATIBILITY_ACTIVE = _install_derive_order_rejection_compatibility()
 
 
 class MarketState(StrEnum):
@@ -469,7 +615,9 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         self._action_timestamps: deque[float] = deque()
         self._action_events: deque[tuple[float, str]] = deque()
         self._pending_stops: set[str] = set()
+        self._pending_stop_levels: dict[str, str] = {}
         self._unexpected_active: list[Any] = []
+        self._execution_fail_closed_reason: str | None = None
         self._last_action: dict[str, str] = {"bid": "NONE", "ask": "NONE"}
         self._fill_observations: dict[str, dict[str, Any]] = {}
         self._markout_30s: list[Decimal] = []
@@ -565,6 +713,104 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             else:
                 self._unexpected_active.append(executor)
         return result
+
+    @staticmethod
+    def _executor_status(executor: Any) -> str:
+        status = getattr(executor, "status", None)
+        value = getattr(status, "value", status)
+        return str(value or "").upper()
+
+    @classmethod
+    def _is_terminal_executor(cls, executor: Any) -> bool:
+        return bool(getattr(executor, "is_done", False)) or cls._executor_status(executor) in {
+            "TERMINATED",
+            "CLOSED",
+        }
+
+    def _reconcile_pending_stops(self) -> set[str]:
+        """Release replacement gates only after a native executor is terminal."""
+        by_id = {str(getattr(executor, "id", "")): executor for executor in self.executors_info}
+        for executor_id in list(self._pending_stops):
+            executor = by_id.get(executor_id)
+            if executor is not None and self._is_terminal_executor(executor):
+                self._pending_stops.discard(executor_id)
+                self._pending_stop_levels.pop(executor_id, None)
+        return {self._pending_stop_levels[executor_id] for executor_id in self._pending_stops if executor_id in self._pending_stop_levels}
+
+    def _pending_create_levels(self) -> set[str]:
+        reservations = self._reservations.setdefault(self.config.portfolio_id, {})
+        return {
+            level
+            for (controller_id, level), reservation in reservations.items()
+            if controller_id == self.config.id and reservation.asset == self.config.asset
+        }
+
+    @staticmethod
+    def _native_submit_price(price: Decimal) -> Decimal:
+        """Mirror Derive 2.16.0's four-significant-digit price conversion."""
+        return Decimal(str(float(f"{price:.4g}")))
+
+    def _self_crossing_level(
+        self,
+        level: str,
+        desired_price: Decimal,
+        active: dict[str, Any],
+        desired_prices: dict[str, Decimal | None],
+    ) -> bool:
+        """Return true when native submitted prices would cross own liquidity."""
+        native_price = self._native_submit_price(desired_price)
+        opposite_level = "ask" if level == "bid" else "bid"
+        opposite = active.get(opposite_level)
+        if opposite is not None:
+            opposite_config = getattr(opposite, "config", None)
+            opposite_price = Decimal(str(getattr(opposite_config, "price", ZERO) or ZERO))
+            if opposite_price > ZERO:
+                native_opposite = self._native_submit_price(opposite_price)
+                if level == "bid" and native_price >= native_opposite:
+                    return True
+                if level == "ask" and native_price <= native_opposite:
+                    return True
+        # Also guard two new quotes in the same controller cycle after the
+        # connector's native four-significant-digit conversion.
+        other_desired = desired_prices.get(opposite_level)
+        if other_desired is not None:
+            native_other = self._native_submit_price(other_desired)
+            if level == "bid" and native_price >= native_other:
+                return True
+            if level == "ask" and native_price <= native_other:
+                return True
+        return False
+
+    def _observe_execution_failures(self) -> str | None:
+        """Read native connector/error metadata and executor retry state."""
+        if self.config.shadow_mode:
+            return None
+        try:
+            connector = self.market_data_provider.get_connector(self.config.execution_market_connector_name)
+            connector_error = getattr(connector, "_adaptive_mm_last_order_error", None)
+            if connector_error:
+                return str(connector_error)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+        processed_error = self.processed_data.get("last_error")
+        if processed_error and any(
+            marker in str(processed_error).lower() for marker in ("cross", "nonce", "reject", "already been used")
+        ):
+            return str(processed_error)
+        for executor in self.executors_info:
+            custom = getattr(executor, "custom_info", {}) or {}
+            try:
+                retries = int(custom.get("current_retries", 0) or 0)
+            except (TypeError, ValueError):
+                retries = 0
+            if retries > 0:
+                return str(custom.get("last_error") or custom.get("error_message") or "DERIVE_ORDER_RETRY")
+            custom_error = custom.get("last_error") or custom.get("error_message")
+            if custom_error and any(
+                marker in str(custom_error).lower() for marker in ("cross", "nonce", "reject", "already been used")
+            ):
+                return str(custom_error)
+        return None
 
     def _mutations_last_minute(self, now: float) -> int:
         while self._action_timestamps and now - self._action_timestamps[0] >= 60:
@@ -929,6 +1175,18 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             if mode == MMMode.PAUSED or amount <= ZERO:
                 bid_price = ask_price = None
             self._plan = QuotePlan(bid_price, ask_price, amount, fair, self._market_state, mode, inventory_mode, size_reason)
+            if self._execution_fail_closed_reason is not None:
+                operational = OperationalState.ERROR
+                self._plan = QuotePlan(
+                    None,
+                    None,
+                    amount,
+                    fair,
+                    self._market_state,
+                    MMMode.PAUSED,
+                    inventory_mode,
+                    "EXECUTION_FAIL_CLOSED",
+                )
 
             active = self._active()
             with self._portfolio_lock:
@@ -1033,6 +1291,11 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "peer_risk_healthy": peer_healthy,
                 "peer_risk_state": peer_state,
                 "peer_risk_snapshot_age_seconds": peer_ages,
+                "pending_cancels": sorted(self._reconcile_pending_stops()),
+                "pending_creates": sorted(self._pending_create_levels()),
+                "execution_fail_closed": self._execution_fail_closed_reason is not None,
+                "last_error": self._execution_fail_closed_reason,
+                "diagnostics_state": "HEALTHY",
                 **account_risk,
                 "updated_at": now,
             }
@@ -1057,6 +1320,11 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                     "peer_risk_healthy": peer_healthy,
                     "peer_risk_state": peer_state,
                     "peer_risk_snapshot_age_seconds": peer_ages,
+                    "pending_cancels": sorted(self._reconcile_pending_stops()),
+                    "pending_creates": sorted(self._pending_create_levels()),
+                    "execution_fail_closed": self._execution_fail_closed_reason is not None,
+                    "last_error": self._execution_fail_closed_reason or str(exc),
+                    "diagnostics_state": "ERROR_PATH_REPORTED",
                     "updated_at": now,
                 }
             )
@@ -1069,6 +1337,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         mutation = "replace" if reason in {"FAST_ADVERSE_MOVE", "NORMAL_REFRESH", "NORMAL_REFRESH_FAVORABLE"} else "cancel"
         self._record_mutation(now, mutation)
         level = str(getattr(getattr(executor, "config", None), "level_id", ""))
+        self._pending_stop_levels[executor_id] = level
         self._last_action[level] = reason
         return StopExecutorAction(controller_id=self.config.id, executor_id=executor_id, keep_position=True)
 
@@ -1238,6 +1507,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
     def determine_executor_actions(self) -> list[ExecutorAction]:
         now = self.market_data_provider.time()
         active = self._active()
+        pending_cancel_levels = self._reconcile_pending_stops()
         position_amount = Decimal(str(self.processed_data.get("current_position_amount", ZERO) or ZERO))
         derive_bbo = self.processed_data.get("derive_bbo") or [ZERO, ZERO]
         mark_price = (Decimal(str(derive_bbo[0])) + Decimal(str(derive_bbo[1]))) / Decimal("2")
@@ -1245,6 +1515,8 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             self._prune_reservations(now, active)
             risk_updated_at = float(self.processed_data.get("risk_snapshot_updated_at", 0.0) or 0.0)
             self._publish_portfolio(position_amount, mark_price, active, risk_updated_at)
+        self.processed_data["pending_cancels"] = sorted(pending_cancel_levels)
+        self.processed_data["pending_creates"] = sorted(self._pending_create_levels())
         actions: list[ExecutorAction] = []
         for executor in self._unexpected_active:
             action = self._stop(executor, now, "UNEXPECTED_OR_DUPLICATE_EXECUTOR")
@@ -1256,6 +1528,21 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         if not armed or self._plan is None or self._plan.mm_mode == MMMode.PAUSED:
             for executor in active.values():
                 action = self._stop(executor, now, "SAFETY_CANCEL")
+                if action:
+                    actions.append(action)
+            return actions
+
+        observed_failure = self._observe_execution_failures()
+        if observed_failure and self._execution_fail_closed_reason is None:
+            self._execution_fail_closed_reason = observed_failure
+        if self._execution_fail_closed_reason is not None:
+            self.processed_data["operational_state"] = OperationalState.ERROR.value
+            self.processed_data["execution_fail_closed"] = True
+            self.processed_data["last_error"] = self._execution_fail_closed_reason
+            self.processed_data["block_reason"] = "EXECUTION_FAIL_CLOSED"
+            self.processed_data["diagnostics_state"] = "FAIL_CLOSED"
+            for executor in active.values():
+                action = self._stop(executor, now, "EXECUTION_FAIL_CLOSED")
                 if action:
                     actions.append(action)
             return actions
@@ -1311,8 +1598,31 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                     self.processed_data[f"{level}_size_block_reason"] = f"PEER_RISK_{peer_state}"
             return []
 
+        if pending_cancel_levels:
+            self.processed_data["block_reason"] = "PENDING_CANCEL_CONFIRMATION"
+            for level, (_, price) in desired.items():
+                if level not in active and price is not None:
+                    self._last_action[level] = "PENDING_CANCEL_CONFIRMATION"
+                    self.processed_data[f"{level}_size_block_reason"] = "PENDING_CANCEL_CONFIRMATION"
+            return []
+
+        guard_blocked = {
+            level
+            for level, (_, price) in desired.items()
+            if price is not None and level not in active and self._self_crossing_level(level, price, active, {
+                other_level: other_price
+                for other_level, (_, other_price) in desired.items()
+            })
+        }
+        if guard_blocked:
+            self.processed_data["block_reason"] = "SELF_CROSS_GUARD"
+
         for level, (side, price) in desired.items():
             if level in active or price is None:
+                continue
+            if level in guard_blocked:
+                self._last_action[level] = "SELF_CROSS_GUARD"
+                self.processed_data[f"{level}_size_block_reason"] = "SELF_CROSS_GUARD"
                 continue
             with self._portfolio_lock:
                 if (self.config.id, level) in self._reservations.setdefault(self.config.portfolio_id, {}):
@@ -1363,6 +1673,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
     def get_custom_info(self) -> dict[str, Any]:
         now = self.market_data_provider.time()
         active = self._active()
+        pending_cancel_levels = self._reconcile_pending_stops()
         details = dict(self.processed_data)
         pnl = sum((Decimal(str(getattr(item, "net_pnl_quote", ZERO) or ZERO)) for item in self.executors_info), ZERO)
         self._peak_pnl = max(self._peak_pnl, pnl)
@@ -1393,6 +1704,16 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "uptime_seconds": max(0.0, now - self._started_at),
                 "shadow_mode": self.config.shadow_mode,
                 "mainnet_armed": self.config.mainnet_armed,
+                "pending_cancels": sorted(pending_cancel_levels),
+                "pending_creates": sorted(self._pending_create_levels()),
+                "execution_fail_closed": self._execution_fail_closed_reason is not None,
+                "last_error": self._execution_fail_closed_reason or details.get("last_error"),
+                "diagnostics_state": details.get("diagnostics_state", "HEALTHY"),
+                "peer_health": details.get("peer_risk_state", "UNKNOWN"),
+                "feed_health": {
+                    "derive": details.get("derive_freshness_state", "UNKNOWN"),
+                    "binance": details.get("binance_freshness_state", "UNKNOWN"),
+                },
             }
         )
         return details

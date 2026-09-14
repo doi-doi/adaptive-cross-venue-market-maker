@@ -935,6 +935,161 @@ def test_projected_notional_diagnostic_uses_conservative_derive_mid():
     )
 
 
+def _manual_plan(instance, bid: str | None, ask: str | None):
+    instance._plan = controller.QuotePlan(
+        Decimal(bid) if bid is not None else None,
+        Decimal(ask) if ask is not None else None,
+        Decimal("18"),
+        Decimal("0.5"),
+        controller.MarketState.NORMAL,
+        controller.MMMode.NEUTRAL,
+        controller.InventoryMode.FLAT,
+    )
+    instance._price_tick = Decimal("0.0001")
+
+
+def _executor(executor_id, level, price, now, *, active=True, status="RUNNING", custom_info=None):
+    return types.SimpleNamespace(
+        id=executor_id,
+        is_active=active,
+        status=status,
+        timestamp=now,
+        custom_info=custom_info or {},
+        config=types.SimpleNamespace(level_id=level, price=Decimal(price), amount=Decimal("18")),
+    )
+
+
+def test_native_price_self_cross_guard_blocks_new_bid_against_active_ask():
+    instance, provider = native_controller(Provider(), shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+    _manual_plan(instance, "1.38549", "1.3864")
+    instance.executors_info = [_executor("ask-1", "ask", "1.3853", provider.now)]
+
+    actions = instance.determine_executor_actions()
+
+    assert actions == []
+    assert instance.processed_data["ask_size_block_reason"] != "SELF_CROSS_GUARD"
+    assert instance.processed_data["bid_size_block_reason"] == "SELF_CROSS_GUARD"
+
+
+def test_native_price_self_cross_guard_blocks_new_ask_against_active_bid():
+    instance, provider = native_controller(Provider(), shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+    _manual_plan(instance, "1.3840", "1.38549")
+    instance.executors_info = [_executor("bid-1", "bid", "1.3853", provider.now)]
+
+    actions = instance.determine_executor_actions()
+
+    assert actions == []
+    assert instance.processed_data["ask_size_block_reason"] == "SELF_CROSS_GUARD"
+
+
+def test_pending_cancel_blocks_replacement_until_terminal_confirmation():
+    instance, provider = native_controller(
+        Provider(),
+        shadow_mode=False,
+        mainnet_armed=True,
+        minimum_normal_quote_residency_seconds=Decimal("0"),
+        normal_refresh_deadband_bps=Decimal("1"),
+    )
+    asyncio.run(instance.update_processed_data())
+    _manual_plan(instance, "0.4990", "0.5000")
+    old_ask = _executor("ask-1", "ask", "0.5010", provider.now - 20)
+    instance.executors_info = [old_ask]
+
+    stop_actions = instance.determine_executor_actions()
+    assert len(stop_actions) == 1
+    assert isinstance(stop_actions[0], StopExecutorAction)
+
+    old_ask.is_active = False
+    old_ask.status = "SHUTTING_DOWN"
+    assert instance.determine_executor_actions() == []
+    assert instance.processed_data["pending_cancels"] == ["ask"]
+
+    old_ask.status = "TERMINATED"
+    actions = instance.determine_executor_actions()
+    assert len(actions) == 2
+    assert all(isinstance(action, CreateExecutorAction) for action in actions)
+    assert instance.processed_data["pending_cancels"] == []
+
+
+def test_simultaneous_quotes_that_collapse_to_same_native_price_are_blocked():
+    instance, _ = native_controller(Provider(), shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+    _manual_plan(instance, "1.3853", "1.38549")
+
+    actions = instance.determine_executor_actions()
+
+    assert actions == []
+    assert instance.processed_data["bid_size_block_reason"] == "SELF_CROSS_GUARD"
+    assert instance.processed_data["ask_size_block_reason"] == "SELF_CROSS_GUARD"
+
+
+def test_derive_reject_latches_fail_closed_and_preserves_diagnostics():
+    instance, provider = native_controller(Provider(), shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+    instance.executors_info = [
+        _executor(
+            "bid-1",
+            "bid",
+            "0.4990",
+            provider.now,
+            custom_info={
+                "current_retries": 1,
+                "last_error": "Order was rejected because it crossed with another order placed by the same user",
+            },
+        )
+    ]
+
+    stop_actions = instance.determine_executor_actions()
+    assert len(stop_actions) == 1
+    assert isinstance(stop_actions[0], StopExecutorAction)
+    assert instance.processed_data["execution_fail_closed"] is True
+    assert "crossed" in instance.processed_data["last_error"]
+
+    instance.executors_info[0].is_active = False
+    instance.executors_info[0].status = "TERMINATED"
+    assert instance.determine_executor_actions() == []
+    details = instance.get_custom_info()
+    assert details["last_error"]
+    assert details["pending_cancels"] == []
+    assert details["peer_health"] == "HEALTHY"
+
+
+def test_nonce_reject_latches_fail_closed_without_new_creates():
+    instance, provider = native_controller(Provider(), shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+    instance.executors_info = [
+        _executor(
+            "ask-1",
+            "ask",
+            "0.5010",
+            provider.now,
+            custom_info={
+                "current_retries": 1,
+                "last_error": "This nonce has already been used, please use a new nonce",
+            },
+        )
+    ]
+
+    actions = instance.determine_executor_actions()
+    assert len(actions) == 1
+    assert isinstance(actions[0], StopExecutorAction)
+    assert instance.processed_data["operational_state"] == "ERROR"
+
+    instance.executors_info[0].is_active = False
+    instance.executors_info[0].status = "TERMINATED"
+    assert instance.determine_executor_actions() == []
+    assert "nonce" in instance.get_custom_info()["last_error"]
+
+
+def test_nonce_compatibility_counter_is_strictly_monotonic():
+    controller._last_derive_action_nonce = 0
+    assert controller._next_unique_derive_nonce(100) == 100
+    assert controller._next_unique_derive_nonce(100) == 101
+    assert controller._next_unique_derive_nonce(99) == 102
+
+
 def test_snapshot_shim_guard_recognizes_only_audited_shape(monkeypatch):
     class Affected:
         def __init__(self):
