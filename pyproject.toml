@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "derive-multi-asset-adaptive-mm"
+name = "adaptive-xrp-cross-venue-market-maker"
 version = "1.0.0"
 description = "Hummingbot V2 XRP adaptive market maker for Derive with Binance reference data"
 readme = "README.md"
