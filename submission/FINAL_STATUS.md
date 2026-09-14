@@ -98,11 +98,11 @@ BBO streams. The live design was not distorted to fit a candle-only engine.
 
 ## GitHub
 
-- Repo: https://github.com/doi-doi/derive-multi-asset-adaptive-mm
+- Repo: https://github.com/doi-doi/adaptive-cross-venue-market-maker
 - Branch: `codex/hummingbot-condor-final`
 - Validated runtime code commit: `682612b`
 - Push: PASS
-- PR: https://github.com/doi-doi/derive-multi-asset-adaptive-mm/pull/1
+- PR: https://github.com/doi-doi/adaptive-cross-venue-market-maker/pull/1
 
 ## Safety
 

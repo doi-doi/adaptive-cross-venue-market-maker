@@ -95,4 +95,4 @@ The native contract probe must run inside the installed Hummingbot API image.
 See [local environment](docs/LOCAL_ENVIRONMENT.md), [Condor operations](docs/CONDOR.md),
 [runbook](docs/RUNBOOK.md), and [hackathon compliance](docs/HACKATHON_COMPLIANCE.md).
 
-Repository: [doi-doi/derive-multi-asset-adaptive-mm](https://github.com/doi-doi/derive-multi-asset-adaptive-mm)
+Repository: [doi-doi/adaptive-cross-venue-market-maker](https://github.com/doi-doi/adaptive-cross-venue-market-maker)
