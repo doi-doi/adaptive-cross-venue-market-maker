@@ -22,7 +22,7 @@ max_total_inventory_quote: 400
 max_total_open_order_quote: 400
 max_asset_inventory_quote: 180
 max_asset_open_order_quote: 100
-order_amount_quote: 25
+order_amount_quote: 40
 binance_stale_seconds: 3
 derive_stale_seconds: 3
 binance_recovery_seconds: 3
@@ -35,6 +35,7 @@ high_volatility_bps: 8
 extreme_volatility_bps: 20
 extreme_spread_bps: 80
 state_hysteresis_seconds: 10
+normal_total_spread_bps: 8
 maker_fee_buffer_bps: 1
 minimum_profit_buffer_bps: 2
 volatility_buffer_multiplier: 0.5
@@ -42,3 +43,6 @@ latency_toxicity_buffer_bps: 1
 direction_skew_bps: 1.5
 inventory_skew_bps: 6
 max_quote_mutations_per_minute: 30
+toxicity_markout_threshold_bps: 5
+toxicity_widening_total_spread_bps: 4
+toxicity_guard_seconds: 60

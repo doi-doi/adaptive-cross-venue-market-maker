@@ -423,7 +423,194 @@ def apply_state_hysteresis(
 
 
 def calculate_fair_value(binance_mid: Decimal, basis_bps: Decimal, microprice_adjustment_bps: Decimal) -> Decimal:
+    """Calculate the legacy Binance-relative fair value for diagnostics.
+
+    The normal Derive quote path no longer uses this absolute reference price
+    as its centre.  Keeping the helper preserves the causal basis diagnostic
+    and the existing public API used by older reports/tests.
+    """
     return binance_mid * (ONE + (basis_bps + microprice_adjustment_bps) / BPS)
+
+
+def calculate_derive_microprice(
+    derive_bid: Decimal,
+    derive_ask: Decimal,
+    derive_bid_size: Decimal,
+    derive_ask_size: Decimal,
+) -> Decimal:
+    """Return a Decimal-safe Derive microprice, falling back to its midpoint.
+
+    ``microprice = ask * bid_size + bid * ask_size`` is only meaningful when
+    both top-of-book sizes are positive and the book itself is valid.  A
+    malformed/empty size must never make the quote centre jump to Binance.
+    """
+    midpoint = (derive_bid + derive_ask) / Decimal("2")
+    if (
+        derive_bid <= ZERO
+        or derive_ask <= derive_bid
+        or derive_bid_size <= ZERO
+        or derive_ask_size <= ZERO
+    ):
+        return midpoint
+    return (derive_ask * derive_bid_size + derive_bid * derive_ask_size) / (
+        derive_bid_size + derive_ask_size
+    )
+
+
+def calculate_basis_bps(derive_mid: Decimal, reference_mid: Decimal) -> Decimal:
+    """Return a normalized cross-venue basis without assuming equal quotes."""
+    if derive_mid <= ZERO or reference_mid <= ZERO:
+        return ZERO
+    return (derive_mid / reference_mid - ONE) * BPS
+
+
+def quote_staleness_bps(current_fair_value: Decimal, fair_value_at_creation: Decimal) -> Decimal:
+    """Measure movement of the Derive fair value since quote creation."""
+    if current_fair_value <= ZERO or fair_value_at_creation <= ZERO:
+        return ZERO
+    return abs(current_fair_value / fair_value_at_creation - ONE) * BPS
+
+
+def classify_binance_toxicity_side(fast_move_bps: Decimal, threshold_bps: Decimal) -> str | None:
+    """Map a sharp Binance move to the vulnerable Derive quote side."""
+    if fast_move_bps <= -abs(threshold_bps):
+        return "bid"
+    if fast_move_bps >= abs(threshold_bps):
+        return "ask"
+    return None
+
+
+def classify_binance_shock(
+    fast_move_bps: Decimal,
+    basis_residual_bps: Decimal,
+    volatility_bps: Decimal,
+    *,
+    emergency_move_bps: Decimal = Decimal("20"),
+    emergency_dislocation_bps: Decimal = Decimal("12"),
+    emergency_volatility_bps: Decimal = Decimal("20"),
+    elevated_move_bps: Decimal = Decimal("5"),
+    elevated_dislocation_bps: Decimal = Decimal("5"),
+) -> tuple[str, str | None, tuple[str, ...]]:
+    """Classify Binance movement without turning normal noise into cancels.
+
+    Emergency requires at least two independent danger conditions.  The
+    cross-venue residual is signed as Derive minus Binance, so a positive
+    Binance move (or negative residual) makes the ask vulnerable and vice
+    versa.  A single elevated condition widens the quote but does not cancel.
+    """
+    conditions: list[str] = []
+    if abs(fast_move_bps) >= emergency_move_bps:
+        conditions.append("LARGE_BINANCE_MOVE")
+    if abs(basis_residual_bps) >= emergency_dislocation_bps:
+        conditions.append("CROSS_VENUE_DISLOCATION")
+    if volatility_bps >= emergency_volatility_bps:
+        conditions.append("VOLATILITY_SPIKE")
+    direction = fast_move_bps if abs(fast_move_bps) >= elevated_move_bps else -basis_residual_bps
+    side = "ask" if direction > ZERO else "bid" if direction < ZERO else None
+    elevated = abs(fast_move_bps) >= elevated_move_bps or abs(basis_residual_bps) >= elevated_dislocation_bps
+    if len(conditions) >= 2:
+        state = "EMERGENCY"
+    elif elevated:
+        state = "ELEVATED"
+    else:
+        state = "NORMAL"
+    return state, side, tuple(conditions)
+
+
+def update_binance_shock_hysteresis(
+    *,
+    active: bool,
+    latched_side: str | None,
+    latched_conditions: tuple[str, ...],
+    recovery_since: float | None,
+    raw_state: str,
+    raw_side: str | None,
+    raw_conditions: tuple[str, ...],
+    now: float,
+    recovery_seconds: float,
+) -> tuple[bool, str | None, tuple[str, ...], float | None, str]:
+    """Keep a true shock latched until conditions are calm for long enough."""
+    if raw_state == "EMERGENCY":
+        return True, raw_side or latched_side, raw_conditions, None, "EMERGENCY"
+    if not active:
+        return False, None, (), None, raw_state
+    if raw_state == "NORMAL":
+        if recovery_since is None:
+            return True, latched_side, latched_conditions, now, "EMERGENCY_RECOVERY"
+        if now - recovery_since >= recovery_seconds:
+            return False, None, (), None, "NORMAL"
+    return True, latched_side or raw_side, latched_conditions, recovery_since, "EMERGENCY_RECOVERY"
+
+
+def calculate_total_spread_bps(bid_price: Decimal | None, ask_price: Decimal | None) -> Decimal | None:
+    """Return the quoted bid/ask distance using the TOTAL-spread convention."""
+    if bid_price is None or ask_price is None or bid_price <= ZERO or ask_price <= bid_price:
+        return None
+    midpoint = (bid_price + ask_price) / Decimal("2")
+    return (ask_price - bid_price) / midpoint * BPS
+
+
+def normal_quote_edge_bps(total_spread_bps: Decimal) -> Decimal:
+    """Convert a configured total bid/ask spread to the per-side edge."""
+    if total_spread_bps <= ZERO:
+        raise ValueError("total spread must be positive")
+    return total_spread_bps / Decimal("2")
+
+
+def calculate_normal_quote_prices(
+    derive_bid: Decimal,
+    derive_ask: Decimal,
+    reservation: Decimal,
+    total_spread_bps: Decimal,
+    tick_size: Decimal,
+) -> tuple[Decimal, Decimal]:
+    """Place calm quotes inside a wide Derive BBO without taking liquidity.
+
+    The returned prices remain one native tick away from the opposite BBO. If
+    the book is too narrow to improve safely, the current BBO is retained.
+    ``total_spread_bps`` is a complete bid-to-ask target, never a per-side
+    value.
+    """
+    if derive_bid <= ZERO or derive_ask <= derive_bid or reservation <= ZERO or tick_size <= ZERO:
+        return derive_bid, derive_ask
+    edge = normal_quote_edge_bps(total_spread_bps) / BPS
+    target_bid = reservation * (ONE - edge)
+    target_ask = reservation * (ONE + edge)
+    bid = min(max(derive_bid, target_bid), derive_ask - tick_size)
+    ask = max(min(derive_ask, target_ask), derive_bid + tick_size)
+    if bid >= ask:
+        return derive_bid, derive_ask
+    return bid, ask
+
+
+def effective_quote_edge_bps(
+    market_state: MarketState,
+    normal_total_spread_bps: Decimal,
+    protected_edge_bps: Decimal,
+    toxicity_guard_active: bool = False,
+    toxicity_widening_total_spread_bps: Decimal = ZERO,
+) -> Decimal:
+    """Select the per-side edge while preserving wider protective regimes."""
+    edge = (
+        normal_quote_edge_bps(normal_total_spread_bps)
+        if market_state == MarketState.NORMAL
+        else protected_edge_bps
+    )
+    if toxicity_guard_active and toxicity_widening_total_spread_bps > ZERO:
+        edge += normal_quote_edge_bps(toxicity_widening_total_spread_bps)
+    return edge
+
+
+def markout_is_toxic(
+    markout_5s_bps: Decimal | None,
+    markout_30s_bps: Decimal | None,
+    threshold_bps: Decimal,
+) -> bool:
+    """Return true when either recent markout horizon is materially negative."""
+    return any(
+        markout is not None and markout <= -abs(threshold_bps)
+        for markout in (markout_5s_bps, markout_30s_bps)
+    )
 
 
 def should_refresh(
@@ -436,7 +623,17 @@ def should_refresh(
     minimum_residency_seconds: Decimal,
     deadband_bps: Decimal,
     fast_adverse: bool,
+    derive_staleness_bps: Decimal | None = None,
+    refresh_reason: str | None = None,
 ) -> tuple[bool, str]:
+    """Decide whether one resting quote should be replaced.
+
+    ``derive_staleness_bps`` is an optional source diagnostic.  When present,
+    the normal replacement reason is explicitly Derive-driven; Binance-only
+    movement is intentionally not an input to this decision.  ``fast_adverse``
+    remains for backwards-compatible callers, while the live controller routes
+    its Binance shock through a separate side-specific toxicity cancellation.
+    """
     if fast_adverse:
         return True, "FAST_ADVERSE_MOVE"
     if current_price == desired_price or abs(current_price - desired_price) < tick_size:
@@ -446,6 +643,16 @@ def should_refresh(
     distance_bps = abs(desired_price / current_price - ONE) * BPS
     if distance_bps < deadband_bps:
         return False, "DEADBAND"
+    if (
+        derive_staleness_bps is not None
+        and derive_staleness_bps < deadband_bps
+        and refresh_reason in {None, "DERIVE_STALENESS_REFRESH"}
+    ):
+        return False, "DEADBAND"
+    if refresh_reason is not None:
+        return True, refresh_reason
+    if derive_staleness_bps is not None:
+        return True, "DERIVE_STALENESS_REFRESH"
     favorable = (side == TradeType.BUY and desired_price > current_price) or (
         side == TradeType.SELL and desired_price < current_price
     )
@@ -496,6 +703,12 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
     extreme_spread_bps: Decimal = Field(default=Decimal("80"), gt=0)
     state_hysteresis_seconds: Decimal = Field(default=Decimal("10"), ge=0)
 
+    # ``normal_total_spread_bps`` is explicitly the complete bid-to-ask
+    # distance.  The controller converts it to a half-spread per side only in
+    # the calm NORMAL regime; trend/volatility/event protection keeps the
+    # existing wider edge.
+    normal_total_spread_bps: Decimal = Field(default=Decimal("8"), gt=0)
+
     maker_fee_buffer_bps: Decimal = Field(default=Decimal("1"), ge=0)
     minimum_profit_buffer_bps: Decimal = Field(default=Decimal("2"), ge=0)
     volatility_buffer_multiplier: Decimal = Field(default=Decimal("0.5"), ge=0)
@@ -507,9 +720,31 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
 
     normal_refresh_deadband_bps: Decimal = Field(default=Decimal("3"), gt=0)
     minimum_normal_quote_residency_seconds: Decimal = Field(default=Decimal("10"), ge=0)
+    # Optional research/diagnostic ceiling.  It is unset in the committed
+    # production surface, so normal quote age remains governed by Derive
+    # staleness and the existing residency/deadband rules.
+    max_normal_quote_age_seconds: Decimal | None = Field(default=None, gt=0)
     fast_adverse_move_bps: Decimal = Field(default=Decimal("5"), gt=0)
     fast_adverse_window_seconds: Decimal = Field(default=Decimal("2"), gt=0)
     max_quote_mutations_per_minute: int = Field(default=30, ge=1, le=120)
+
+    # Binance is a reference-only danger sensor.  One condition is elevated
+    # (widen, do not cancel); two independent conditions are required for an
+    # immediate vulnerable-side emergency cancel.
+    binance_emergency_move_bps: Decimal = Field(default=Decimal("20"), gt=0)
+    binance_emergency_dislocation_bps: Decimal = Field(default=Decimal("12"), gt=0)
+    binance_emergency_volatility_bps: Decimal = Field(default=Decimal("20"), gt=0)
+    binance_elevated_move_bps: Decimal = Field(default=Decimal("5"), gt=0)
+    binance_elevated_dislocation_bps: Decimal = Field(default=Decimal("5"), gt=0)
+    binance_elevated_widening_total_spread_bps: Decimal = Field(default=Decimal("2"), gt=0)
+    binance_emergency_recovery_seconds: Decimal = Field(default=Decimal("10"), gt=0)
+
+    # A recent strongly negative maker markout temporarily widens the quote.
+    # These are guardrails, not optimisation knobs; the spread study reports
+    # their raw activation count separately.
+    toxicity_markout_threshold_bps: Decimal = Field(default=Decimal("5"), gt=0)
+    toxicity_widening_total_spread_bps: Decimal = Field(default=Decimal("4"), gt=0)
+    toxicity_guard_seconds: Decimal = Field(default=Decimal("60"), gt=0)
 
     @field_validator("asset", mode="before")
     @classmethod
@@ -543,6 +778,10 @@ class DeriveBinanceAdaptiveMMConfig(ControllerConfigBase):
             raise ValueError("one bid plus one ask must fit the asset open-order cap")
         if self.high_volatility_bps >= self.extreme_volatility_bps:
             raise ValueError("high volatility threshold must be below extreme threshold")
+        if self.binance_emergency_move_bps <= self.binance_elevated_move_bps:
+            raise ValueError("Binance emergency move threshold must exceed elevated threshold")
+        if self.binance_emergency_dislocation_bps <= self.binance_elevated_dislocation_bps:
+            raise ValueError("Binance emergency dislocation threshold must exceed elevated threshold")
         return self
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
@@ -621,15 +860,42 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         self._execution_fail_closed_reason: str | None = None
         self._last_action: dict[str, str] = {"bid": "NONE", "ask": "NONE"}
         self._fill_observations: dict[str, dict[str, Any]] = {}
+        self._markout_5s: list[Decimal] = []
         self._markout_30s: list[Decimal] = []
         self._markout_60s: list[Decimal] = []
+        self._markout_300s: list[Decimal] = []
+        self._toxicity_guard_until = 0.0
+        self._toxicity_guard_active = False
+        self._toxicity_guard_activations = 0
+        self._toxicity_markout_counts: tuple[int, int] = (0, 0)
+        self._binance_shock_state = "NORMAL"
+        self._binance_emergency_active = False
+        self._binance_emergency_side: str | None = None
+        self._binance_emergency_conditions: tuple[str, ...] = ()
+        self._binance_recovery_since: float | None = None
+        # Per-level quote anchors let normal refreshes compare a current
+        # Derive fair value with the fair value captured when that quote was
+        # created.  The map is deliberately local to this controller; missing
+        # executor metadata is handled fail-closed by initializing on first
+        # observation rather than borrowing Binance state.
+        self._quote_fair_at_creation: dict[str, tuple[float, Decimal]] = {}
+        self._quote_fair_anchor_trusted: dict[str, bool] = {}
+        self._quote_lifetimes_seconds: list[Decimal] = []
+        self._replacement_count = 0
+        self._cancel_count = 0
+        self._derive_refresh_count = 0
+        self._binance_emergency_cancels: dict[str, int] = {"bid": 0, "ask": 0}
+        self._replacement_reason_counts: dict[str, int] = {}
+        self._started_at = self.market_data_provider.time()
+        self._quote_uptime_seconds = 0.0
+        self._quote_uptime_last_at = self._started_at
+        self._quote_was_available = False
         self._peak_pnl = ZERO
         self._peak_account_equity: Decimal | None = None
         self._peak_account_collateral: Decimal | None = None
         self._price_tick: Decimal | None = None
         self._amount_quantizer: Any | None = None
         self._trading_rule: Any | None = None
-        self._started_at = self.market_data_provider.time()
         terms = (config.portfolio_capital_quote, config.reserve_quote)
         existing_terms = self._portfolio_terms.setdefault(config.portfolio_id, terms)
         if existing_terms != terms:
@@ -824,6 +1090,101 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         self._action_timestamps.append(now)
         self._action_events.append((now, action))
 
+    def _quote_lifetime_metrics(self) -> dict[str, Decimal | None]:
+        if not self._quote_lifetimes_seconds:
+            return {
+                "quote_lifetime_average_seconds": None,
+                "quote_lifetime_median_seconds": None,
+                "quote_lifetime_p90_seconds": None,
+            }
+        ordered = sorted(self._quote_lifetimes_seconds)
+        index = (len(ordered) - 1) * 0.90
+        lower, upper = int(index), min(len(ordered) - 1, int(index) + 1)
+        fraction = Decimal(str(index - int(index)))
+        p90 = ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+        return {
+            "quote_lifetime_average_seconds": sum(ordered, ZERO) / Decimal(len(ordered)),
+            "quote_lifetime_median_seconds": Decimal(str(statistics.median(ordered))),
+            "quote_lifetime_p90_seconds": p90,
+        }
+
+    def _quote_fair_anchor(self, level: str, executor: Any, current_fair: Decimal) -> Decimal:
+        """Resolve the Derive fair value captured for a resting quote.
+
+        Native executor implementations differ in whether arbitrary creation
+        metadata is exposed.  Prefer that metadata when present, then use the
+        controller's per-level anchor, and finally initialize the anchor from
+        the current Derive fair value.  The fallback is deterministic and never
+        uses the absolute Binance price.
+        """
+        custom = getattr(executor, "custom_info", {}) or {}
+        for key in ("derive_fair_value_at_creation", "quote_fair_value_at_creation"):
+            try:
+                value = Decimal(str(custom.get(key)))
+            except (TypeError, ValueError, ArithmeticError):
+                continue
+            if value > ZERO:
+                self._quote_fair_anchor_trusted[level] = True
+                return value
+        timestamp = float(getattr(executor, "timestamp", self.market_data_provider.time()))
+        cached = self._quote_fair_at_creation.get(level)
+        if cached is None or abs(cached[0] - timestamp) > 1e-6:
+            self._quote_fair_at_creation[level] = (timestamp, current_fair)
+            self._quote_fair_anchor_trusted[level] = False
+            return current_fair
+        self._quote_fair_anchor_trusted.setdefault(level, True)
+        return cached[1]
+
+    def _binance_toxicity_level(self) -> str | None:
+        """Return the vulnerable side only for an asserted emergency."""
+        return self._binance_emergency_side if self._binance_emergency_active else None
+
+    def _update_binance_shock_state(self, now: float, basis_residual_bps: Decimal, volatility_bps: Decimal) -> None:
+        raw_state, raw_side, raw_conditions = classify_binance_shock(
+            self._fast_move_bps,
+            basis_residual_bps,
+            volatility_bps,
+            emergency_move_bps=self.config.binance_emergency_move_bps,
+            emergency_dislocation_bps=self.config.binance_emergency_dislocation_bps,
+            emergency_volatility_bps=self.config.binance_emergency_volatility_bps,
+            elevated_move_bps=self.config.binance_elevated_move_bps,
+            elevated_dislocation_bps=self.config.binance_elevated_dislocation_bps,
+        )
+        (
+            self._binance_emergency_active,
+            self._binance_emergency_side,
+            self._binance_emergency_conditions,
+            self._binance_recovery_since,
+            self._binance_shock_state,
+        ) = update_binance_shock_hysteresis(
+            active=self._binance_emergency_active,
+            latched_side=self._binance_emergency_side,
+            latched_conditions=self._binance_emergency_conditions,
+            recovery_since=self._binance_recovery_since,
+            raw_state=raw_state,
+            raw_side=raw_side,
+            raw_conditions=raw_conditions,
+            now=now,
+            recovery_seconds=float(self.config.binance_emergency_recovery_seconds),
+        )
+
+    def _binance_emergency_reason(self, level: str) -> str:
+        conditions = "_".join(self._binance_emergency_conditions) or "RECOVERY"
+        return f"BINANCE_TRUE_SHOCK_{conditions}_CANCEL_{level.upper()}"
+
+    def _normal_refresh_reason(self, level: str, *, max_age_due: bool = False) -> str:
+        """Label the source of a non-emergency quote replacement."""
+        if max_age_due:
+            # The age check is applied by ``determine_executor_actions`` and
+            # this helper is used only for its explicit reason label.
+            return "MAX_QUOTE_AGE_REFRESH"
+        inventory_mode = str(self.processed_data.get("inventory_mode", "FLAT"))
+        if inventory_mode not in {InventoryMode.FLAT.value, "FLAT", ""}:
+            return "INVENTORY_REFRESH"
+        if self._market_state != MarketState.NORMAL:
+            return "REGIME_WIDEN"
+        return "DERIVE_STALENESS_REFRESH"
+
     @classmethod
     def _reset_shared_state_for_tests(cls) -> None:
         with cls._portfolio_lock:
@@ -981,7 +1342,12 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         except (AttributeError, KeyError, TypeError, ValueError):
             return empty
 
+    @staticmethod
+    def _average_markout(values: list[Decimal]) -> Decimal | None:
+        return sum(values, ZERO) / len(values) if values else None
+
     def _update_markouts(self, now: float, derive_mid: Decimal) -> tuple[Decimal | None, Decimal | None]:
+        """Record signed markouts at deterministic horizons after each fill."""
         for executor in self.executors_info:
             executor_id = str(getattr(executor, "id", ""))
             custom = getattr(executor, "custom_info", {}) or {}
@@ -1003,8 +1369,10 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                     "fill_price": fill_price,
                     "fill_time": fill_time,
                     "side": getattr(getattr(executor, "config", None), "side", None),
+                    "done_5": False,
                     "done_30": False,
                     "done_60": False,
+                    "done_300": False,
                 }
         for observation in self._fill_observations.values():
             age = now - observation["fill_time"]
@@ -1016,21 +1384,104 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 markout = (fill_price / derive_mid - ONE) * BPS
             else:
                 continue
+            if age >= 5 and not observation["done_5"]:
+                self._markout_5s.append(markout)
+                observation["done_5"] = True
             if age >= 30 and not observation["done_30"]:
                 self._markout_30s.append(markout)
                 observation["done_30"] = True
             if age >= 60 and not observation["done_60"]:
                 self._markout_60s.append(markout)
                 observation["done_60"] = True
-        markout_30 = sum(self._markout_30s, ZERO) / len(self._markout_30s) if self._markout_30s else None
-        markout_60 = sum(self._markout_60s, ZERO) / len(self._markout_60s) if self._markout_60s else None
+            if age >= 300 and not observation["done_300"]:
+                self._markout_300s.append(markout)
+                observation["done_300"] = True
+        markout_30 = self._average_markout(self._markout_30s)
+        markout_60 = self._average_markout(self._markout_60s)
         return markout_30, markout_60
+
+    def _refresh_toxicity_guard(self, now: float) -> bool:
+        """Temporarily widen after a newly observed toxic 5s/30s markout."""
+        counts = (len(self._markout_5s), len(self._markout_30s))
+        if counts != self._toxicity_markout_counts:
+            self._toxicity_markout_counts = counts
+            markout_5 = self._markout_5s[-1] if self._markout_5s else None
+            markout_30 = self._markout_30s[-1] if self._markout_30s else None
+            if markout_is_toxic(markout_5, markout_30, self.config.toxicity_markout_threshold_bps):
+                self._toxicity_guard_until = now + float(self.config.toxicity_guard_seconds)
+                self._toxicity_guard_activations += 1
+        self._toxicity_guard_active = now < self._toxicity_guard_until
+        return self._toxicity_guard_active
+
+    def _record_quote_uptime(self, now: float, quote_available: bool) -> None:
+        elapsed = max(0.0, now - self._quote_uptime_last_at)
+        if self._quote_was_available:
+            self._quote_uptime_seconds += elapsed
+        self._quote_uptime_last_at = now
+        self._quote_was_available = quote_available
+
+    def _volume_metrics(self, now: float, pnl: Decimal) -> dict[str, Any]:
+        """Return raw maker-turnover diagnostics without fabricating fills."""
+        volume = sum(
+            (Decimal(str(getattr(item, "filled_amount_quote", ZERO) or ZERO)) for item in self.executors_info),
+            ZERO,
+        )
+        fees = sum(
+            (Decimal(str(getattr(item, "cum_fees_quote", ZERO) or ZERO)) for item in self.executors_info),
+            ZERO,
+        )
+        fills = sum(
+            1
+            for item in self.executors_info
+            if Decimal(str(getattr(item, "filled_amount_quote", ZERO) or ZERO)) > ZERO
+        )
+        uptime_seconds = max(0.0, now - self._started_at)
+        uptime = Decimal(str(uptime_seconds))
+        hours = uptime / Decimal("3600") if uptime > ZERO else ZERO
+        days = uptime / Decimal("86400") if uptime > ZERO else ZERO
+        volume_per_hour = volume / hours if hours > ZERO else ZERO
+        volume_per_day = volume / days if days > ZERO else ZERO
+        pnl_per_1000 = pnl / volume * Decimal("1000") if volume > ZERO else None
+        pnl_per_fill = pnl / Decimal(fills) if fills else None
+        markout_5 = self._average_markout(self._markout_5s)
+        markout_30 = self._average_markout(self._markout_30s)
+        markout_toxic = markout_is_toxic(markout_5, markout_30, self.config.toxicity_markout_threshold_bps)
+        valid = pnl > ZERO and pnl_per_1000 is not None and pnl_per_1000 > ZERO and not markout_toxic
+        if self.config.max_account_drawdown_quote is not None:
+            valid = valid and (self._peak_pnl - pnl) <= self.config.max_account_drawdown_quote
+        score = volume_per_day if valid else ZERO
+        capital_turnover = (
+            volume_per_day / self.config.portfolio_capital_quote
+            if self.config.portfolio_capital_quote > ZERO
+            else None
+        )
+        uptime_pct = (
+            Decimal(str(min(1.0, self._quote_uptime_seconds / uptime_seconds))) * Decimal("100")
+            if uptime_seconds > 0
+            else ZERO
+        )
+        return {
+            "maker_volume_quote": volume,
+            "maker_volume_per_hour": volume_per_hour,
+            "maker_volume_per_day": volume_per_day,
+            "capital_turnover_per_day": capital_turnover,
+            "fills": fills,
+            "fills_per_hour": Decimal(fills) / hours if hours > ZERO else ZERO,
+            "maker_fees_quote": fees,
+            "gross_spread_capture_quote": None,
+            "inventory_pnl_quote": None,
+            "pnl_per_1000_volume": pnl_per_1000,
+            "pnl_per_fill": pnl_per_fill,
+            "quote_uptime_pct": uptime_pct,
+            "profitable_volume_efficiency": score,
+            "profitable_volume_efficiency_valid": valid,
+        }
 
     async def update_processed_data(self):
         now = self.market_data_provider.time()
         operational = OperationalState.SHADOW if self.config.shadow_mode else OperationalState.LIVE_DISARMED
         try:
-            dbid, dask, _, _, derive_updated, _ = self._read_book(
+            dbid, dask, dbid_size, dask_size, derive_updated, _ = self._read_book(
                 self.config.execution_market_connector_name, self.config.trading_pair, now
             )
             bbid, bask, bsize, asize, binance_updated, reference_changed = self._read_book(
@@ -1081,12 +1532,35 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 raise RuntimeError("BINANCE_RECOVERY")
 
             derive_mid, binance_mid = self._mid(dbid, dask), self._mid(bbid, bask)
-            basis = (derive_mid / binance_mid - ONE) * BPS
+            markout_30, markout_60 = self._update_markouts(now, derive_mid)
+            markout_5 = self._average_markout(self._markout_5s)
+            markout_300 = self._average_markout(self._markout_300s)
+            toxicity_guard_active = self._refresh_toxicity_guard(now)
+            basis = calculate_basis_bps(derive_mid, binance_mid)
             self._basis.append(basis)
-            causal_basis = Decimal(str(statistics.median(self._basis)))
-            microprice = (bask * bsize + bbid * asize) / (bsize + asize) if bsize + asize > ZERO else binance_mid
-            micro_bps = (microprice / binance_mid - ONE) * BPS
-            micro_bps = max(-self.config.microprice_adjustment_max_bps, min(self.config.microprice_adjustment_max_bps, micro_bps))
+            expected_basis = Decimal(str(statistics.median(self._basis)))
+            basis_residual = basis - expected_basis
+            derive_microprice = calculate_derive_microprice(dbid, dask, dbid_size, dask_size)
+            derive_micro_bps = (derive_microprice / derive_mid - ONE) * BPS if derive_mid > ZERO else ZERO
+            derive_micro_bps = max(
+                -self.config.microprice_adjustment_max_bps,
+                min(self.config.microprice_adjustment_max_bps, derive_micro_bps),
+            )
+            # Keep a Binance-relative fair value for predictive diagnostics
+            # only.  It is never fed to the normal Derive quote centre.
+            binance_microprice = (
+                (bask * bsize + bbid * asize) / (bsize + asize)
+                if bsize + asize > ZERO
+                else binance_mid
+            )
+            binance_micro_bps = (
+                (binance_microprice / binance_mid - ONE) * BPS if binance_mid > ZERO else ZERO
+            )
+            binance_micro_bps = max(
+                -self.config.microprice_adjustment_max_bps,
+                min(self.config.microprice_adjustment_max_bps, binance_micro_bps),
+            )
+            binance_predictive_fair = calculate_fair_value(binance_mid, expected_basis, binance_micro_bps)
 
             self._record_fixed_volatility_sample(now, binance_mid)
             self._reference_history.append((now, binance_mid))
@@ -1117,6 +1591,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 fast_cutoff = now - float(self.config.fast_adverse_window_seconds)
                 fast_anchor = next((price for stamp, price in self._reference_history if stamp >= fast_cutoff), self._reference_history[0][1])
                 self._fast_move_bps = (binance_mid / fast_anchor - ONE) * BPS
+            self._update_binance_shock_state(now, basis_residual, volatility_bps)
 
             position = self._position_amount()
             position_notional = position * derive_mid
@@ -1125,19 +1600,54 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             if self.config.manual_kill_switch:
                 mode = MMMode.PAUSED
                 operational = OperationalState.RISK_PAUSED
-            fair = calculate_fair_value(binance_mid, causal_basis, micro_bps)
+            # Normal quoting is anchored to Derive's own microprice (or its
+            # midpoint fallback).  Binance remains a predictive overlay for
+            # trend/volatility/toxicity and a normalized basis diagnostic.
+            fair = derive_microprice
             vol_buffer = volatility_bps * self.config.volatility_buffer_multiplier
-            edge = self.config.maker_fee_buffer_bps + self.config.minimum_profit_buffer_bps + vol_buffer + self.config.latency_toxicity_buffer_bps
+            base_edge = (
+                self.config.maker_fee_buffer_bps
+                + self.config.minimum_profit_buffer_bps
+                + vol_buffer
+                + self.config.latency_toxicity_buffer_bps
+            )
+            # Only the calm NORMAL regime uses the configurable total spread.
+            # All protective states retain the existing fee/volatility edge;
+            # toxicity widening is additive and applies to every non-paused
+            # state.
+            edge = effective_quote_edge_bps(
+                self._market_state,
+                self.config.normal_total_spread_bps,
+                base_edge,
+                toxicity_guard_active,
+                self.config.toxicity_widening_total_spread_bps,
+            )
             direction_skew = self.config.direction_skew_bps if mode == MMMode.LONG_BIAS else -self.config.direction_skew_bps if mode == MMMode.SHORT_BIAS else ZERO
             inventory_ratio = max(Decimal("-1"), min(Decimal("1"), position_notional / self.config.max_asset_inventory_quote))
             reservation = fair * (ONE + (direction_skew - inventory_ratio * self.config.inventory_skew_bps) / BPS)
-            raw_bid = min(dbid, reservation * (ONE - edge / BPS))
-            raw_ask = max(dask, reservation * (ONE + edge / BPS))
             execution_market = self.config.execution_market_connector_name
             trading_rules, quantizer = await self._execution_rules_and_quantizer()
             self._trading_rule = trading_rules
             self._amount_quantizer = quantizer
             self._price_tick = Decimal(str(trading_rules.min_price_increment))
+            if self._market_state == MarketState.NORMAL:
+                elevated_widening = (
+                    self.config.binance_elevated_widening_total_spread_bps
+                    if self._binance_shock_state in {"ELEVATED", "EMERGENCY_RECOVERY"}
+                    else ZERO
+                )
+                raw_bid, raw_ask = calculate_normal_quote_prices(
+                    dbid,
+                    dask,
+                    reservation,
+                    self.config.normal_total_spread_bps
+                    + elevated_widening
+                    + (self.config.toxicity_widening_total_spread_bps if toxicity_guard_active else ZERO),
+                    self._price_tick,
+                )
+            else:
+                raw_bid = min(dbid, reservation * (ONE - edge / BPS))
+                raw_ask = max(dask, reservation * (ONE + edge / BPS))
             if quantizer is self.market_data_provider:
                 bid_price = quantizer.quantize_order_price(execution_market, self.config.trading_pair, raw_bid)
                 ask_price = quantizer.quantize_order_price(execution_market, self.config.trading_pair, raw_ask)
@@ -1163,6 +1673,14 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 ask_price = None
             if mode == MMMode.PAUSED or amount <= ZERO:
                 bid_price = ask_price = None
+            binance_toxicity_side = self._binance_toxicity_level()
+            if mode != MMMode.PAUSED and amount > ZERO:
+                # Suppress only the vulnerable side on a sharp Binance move;
+                # the opposite safe side remains eligible to rest.
+                if binance_toxicity_side == "bid":
+                    bid_price = None
+                elif binance_toxicity_side == "ask":
+                    ask_price = None
             self._plan = QuotePlan(bid_price, ask_price, amount, fair, self._market_state, mode, inventory_mode, size_reason)
             if self._execution_fail_closed_reason is not None:
                 operational = OperationalState.ERROR
@@ -1198,7 +1716,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                             now=now,
                             reserve=False,
                         )
-            markout_30, markout_60 = self._update_markouts(now, derive_mid)
             account_risk = self._account_risk(derive_mid)
             account_drawdown = account_risk["account_drawdown"]
             if (
@@ -1218,6 +1735,13 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             elif not self.config.shadow_mode and self.config.mainnet_armed:
                 operational = OperationalState.LIVE_ARMED
 
+            self._record_quote_uptime(
+                now,
+                self._plan.bid_price is not None or self._plan.ask_price is not None,
+            )
+
+            quote_total_spread = calculate_total_spread_bps(self._plan.bid_price, self._plan.ask_price)
+
             self.processed_data = {
                 "asset": self.config.asset,
                 "operational_state": operational.value,
@@ -1234,13 +1758,27 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "binance_bbo_change_age_seconds": binance_bbo_change_age,
                 "binance_freshness_source": binance_freshness_source,
                 "binance_freshness_state": "HEALTHY" if binance_age <= self.config.binance_stale_seconds else "STALE",
-                "binance_fair_value": fair,
-                "basis_bps": causal_basis,
+                "binance_fair_value": binance_predictive_fair,
+                "binance_predictive_fair_value": binance_predictive_fair,
+                "derive_microprice": derive_microprice,
+                "derive_fair_value": fair,
+                "quote_center_source": "DERIVE_MICROPRICE" if derive_microprice != derive_mid else "DERIVE_MIDPOINT",
+                "basis_bps": basis,
+                "expected_basis_bps": expected_basis,
+                "basis_residual_bps": basis_residual,
+                "derive_microprice_displacement_bps": derive_micro_bps,
+                "binance_microprice_displacement_bps": binance_micro_bps,
                 "direction_bps": direction_bps,
                 "volatility_bps": volatility_bps,
                 "volatility_sample_interval_seconds": 1,
                 "volatility_sample_count": len(self._returns),
                 "volatility_sampling_state": "FIXED_1S",
+                "normal_total_spread_bps": self.config.normal_total_spread_bps,
+                "quote_spread_convention": "TOTAL_BID_ASK",
+                "quote_total_spread_bps": quote_total_spread,
+                "toxicity_guard_active": toxicity_guard_active,
+                "toxicity_guard_activations": self._toxicity_guard_activations,
+                "toxicity_guard_until": self._toxicity_guard_until if toxicity_guard_active else None,
                 "market_state": self._market_state.value,
                 "mm_mode": self._plan.mm_mode.value,
                 "inventory_mode": inventory_mode.value,
@@ -1269,10 +1807,27 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "order_amount": amount,
                 "risk_adjusted_order_amount": {"bid": previews["bid"][0], "ask": previews["ask"][0]},
                 "fast_move_bps": self._fast_move_bps,
+                "binance_toxicity_side": binance_toxicity_side,
+                "binance_shock_state": self._binance_shock_state,
+                "binance_emergency_conditions": self._binance_emergency_conditions,
+                "binance_emergency_active": self._binance_emergency_active,
+                "binance_emergency_recovery_since": self._binance_recovery_since,
+                "binance_emergency_action": (
+                    self._binance_emergency_reason(binance_toxicity_side)
+                    if binance_toxicity_side
+                    else None
+                ),
+                "derive_normal_refresh_count": self._derive_refresh_count,
+                "binance_emergency_bid_cancels": self._binance_emergency_cancels["bid"],
+                "binance_emergency_ask_cancels": self._binance_emergency_cancels["ask"],
+                "replacement_reason_counts": dict(self._replacement_reason_counts),
+                "last_actions": dict(self._last_action),
                 "portfolio_inventory": total_inventory,
                 "portfolio_open_orders": total_orders,
+                "markout_5s_bps": markout_5,
                 "markout_30s_bps": markout_30,
                 "markout_60s_bps": markout_60,
+                "markout_300s_bps": markout_300,
                 "block_reason": self._plan.reason,
                 "derive_snapshot_compatibility_active": DERIVE_SNAPSHOT_RACE_COMPATIBILITY_ACTIVE,
                 "risk_snapshot_updated_at": now,
@@ -1292,6 +1847,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             }:
                 operational = OperationalState.ERROR
             self._plan = None
+            self._record_quote_uptime(now, False)
             self.processed_data.update(
                 {
                     "asset": self.config.asset,
@@ -1314,8 +1870,34 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         if not executor_id or executor_id in self._pending_stops:
             return None
         self._pending_stops.add(executor_id)
-        mutation = "replace" if reason in {"FAST_ADVERSE_MOVE", "NORMAL_REFRESH", "NORMAL_REFRESH_FAVORABLE"} else "cancel"
+        try:
+            created_at = float(getattr(executor, "timestamp", now))
+            self._quote_lifetimes_seconds.append(Decimal(str(max(0.0, now - created_at))))
+        except (TypeError, ValueError, ArithmeticError):
+            pass
+        replace_reasons = {
+            "FAST_ADVERSE_MOVE",
+            "NORMAL_REFRESH",
+            "NORMAL_REFRESH_FAVORABLE",
+            "DERIVE_STALENESS_REFRESH",
+            "MAX_QUOTE_AGE_REFRESH",
+            "INVENTORY_REFRESH",
+            "REGIME_WIDEN",
+        }
+        mutation = "replace" if reason in replace_reasons else "cancel"
         self._record_mutation(now, mutation)
+        if mutation == "replace":
+            self._replacement_count += 1
+        else:
+            self._cancel_count += 1
+        if mutation == "replace":
+            self._replacement_reason_counts[reason] = self._replacement_reason_counts.get(reason, 0) + 1
+            if reason == "DERIVE_STALENESS_REFRESH":
+                self._derive_refresh_count += 1
+        if reason.startswith("BINANCE_TRUE_SHOCK_") and reason.endswith("_BID"):
+            self._binance_emergency_cancels["bid"] += 1
+        elif reason.startswith("BINANCE_TRUE_SHOCK_") and reason.endswith("_ASK"):
+            self._binance_emergency_cancels["ask"] += 1
         level = str(getattr(getattr(executor, "config", None), "level_id", ""))
         self._pending_stop_levels[executor_id] = level
         self._last_action[level] = reason
@@ -1503,13 +2085,16 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             if action:
                 actions.append(action)
         if actions:
+            self.processed_data["last_actions"] = dict(self._last_action)
             return actions
         armed = not self.config.shadow_mode and self.config.mainnet_armed and not self.config.manual_kill_switch
         if not armed or self._plan is None or self._plan.mm_mode == MMMode.PAUSED:
+            safety_reason = "STOP_CANCEL" if self.config.manual_kill_switch else "SAFETY_CANCEL"
             for executor in active.values():
-                action = self._stop(executor, now, "SAFETY_CANCEL")
+                action = self._stop(executor, now, safety_reason)
                 if action:
                     actions.append(action)
+            self.processed_data["last_actions"] = dict(self._last_action)
             return actions
 
         observed_failure = self._observe_execution_failures()
@@ -1525,6 +2110,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 action = self._stop(executor, now, "EXECUTION_FAIL_CLOSED")
                 if action:
                     actions.append(action)
+            self.processed_data["last_actions"] = dict(self._last_action)
             return actions
 
         desired = {
@@ -1534,19 +2120,49 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         if self._price_tick is None:
             return []
         tick = self._price_tick
+        toxicity_side = self.processed_data.get("binance_toxicity_side")
         for level, (side, desired_price) in desired.items():
             current = active.get(level)
             if current is not None:
                 if desired_price is None:
-                    action = self._stop(current, now, "INVENTORY_OR_RISK_CANCEL")
+                    reason = (
+                        self._binance_emergency_reason(level)
+                        if toxicity_side == level
+                        else "INVENTORY_REFRESH"
+                        if self.processed_data.get("inventory_mode") in {
+                            InventoryMode.ASK_ONLY.value,
+                            InventoryMode.BID_ONLY.value,
+                        }
+                        else "INVENTORY_OR_RISK_CANCEL"
+                    )
+                    action = self._stop(current, now, reason)
+                    if action:
+                        actions.append(action)
+                    continue
+                if toxicity_side == level:
+                    # A Binance shock is an emergency vulnerable-side action,
+                    # not a normal replacement.  It bypasses residency and
+                    # leaves the opposite safe side eligible to remain.
+                    action = self._stop(current, now, self._binance_emergency_reason(level))
                     if action:
                         actions.append(action)
                     continue
                 config = getattr(current, "config", None)
                 current_price = Decimal(str(getattr(config, "price", ZERO)))
                 age = Decimal(str(max(0.0, now - float(getattr(current, "timestamp", now)))))
-                adverse = (side == TradeType.BUY and self._fast_move_bps <= -self.config.fast_adverse_move_bps) or (
-                    side == TradeType.SELL and self._fast_move_bps >= self.config.fast_adverse_move_bps
+                quote_fair_at_creation = self._quote_fair_anchor(level, current, self._plan.fair_value)
+                derive_staleness = quote_staleness_bps(self._plan.fair_value, quote_fair_at_creation)
+                self.processed_data[f"{level}_derive_fair_value_at_creation"] = quote_fair_at_creation
+                self.processed_data[f"{level}_derive_staleness_bps"] = derive_staleness
+                self.processed_data[f"{level}_quote_age_seconds"] = age
+                max_age_due = (
+                    self.config.max_normal_quote_age_seconds is not None
+                    and age >= self.config.max_normal_quote_age_seconds
+                )
+                refresh_reason = (
+                    "MAX_QUOTE_AGE_REFRESH"
+                    if max_age_due
+                    else self._normal_refresh_reason(level, max_age_due=max_age_due)
                 )
                 refresh, reason = should_refresh(
                     side=side,
@@ -1556,14 +2172,34 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                     age_seconds=age,
                     minimum_residency_seconds=self.config.minimum_normal_quote_residency_seconds,
                     deadband_bps=self.config.normal_refresh_deadband_bps,
-                    fast_adverse=adverse,
+                    fast_adverse=False,
+                    derive_staleness_bps=(
+                        derive_staleness if self._quote_fair_anchor_trusted.get(level, False) else None
+                    ),
+                    refresh_reason=refresh_reason,
                 )
+                if max_age_due and age >= self.config.minimum_normal_quote_residency_seconds:
+                    # A quote-age ceiling is a normal lifecycle reason and
+                    # remains subject to the same cancel-confirm-create gate.
+                    refresh, reason = True, "MAX_QUOTE_AGE_REFRESH"
                 self._last_action[level] = reason
                 budget_available = self._mutations_last_minute(now) < self.config.max_quote_mutations_per_minute
-                if refresh and (adverse or budget_available):
+                if refresh and budget_available:
                     action = self._stop(current, now, reason)
                     if action:
                         actions.append(action)
+        self.processed_data.update(
+            {
+                "last_actions": dict(self._last_action),
+                **self._quote_lifetime_metrics(),
+                "replacements_total": self._replacement_count,
+                "cancels_total": self._cancel_count,
+                "derive_normal_refresh_count": self._derive_refresh_count,
+                "binance_emergency_bid_cancels": self._binance_emergency_cancels["bid"],
+                "binance_emergency_ask_cancels": self._binance_emergency_cancels["ask"],
+                "replacement_reason_counts": dict(self._replacement_reason_counts),
+            }
+        )
         if actions:
             return actions
 
@@ -1588,6 +2224,8 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
 
         for level, (side, price) in desired.items():
             if level in active or price is None:
+                if price is None and toxicity_side == level:
+                    self._last_action[level] = self._binance_emergency_reason(level)
                 continue
             if level in guard_blocked:
                 self._last_action[level] = "SELF_CROSS_GUARD"
@@ -1636,7 +2274,11 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             )
             actions.append(CreateExecutorAction(controller_id=self.config.id, executor_config=executor_config))
             self._record_mutation(now, "create")
+            # Capture the fair value used for this quote so future normal
+            # refreshes are explicitly Derive-staleness comparisons.
+            self._quote_fair_at_creation[level] = (now, self._plan.fair_value)
             self._last_action[level] = "CREATE" if size_reason == "READY" else f"CREATE_{size_reason}"
+        self.processed_data["last_actions"] = dict(self._last_action)
         return actions
 
     def get_custom_info(self) -> dict[str, Any]:
@@ -1646,6 +2288,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         details = dict(self.processed_data)
         pnl = sum((Decimal(str(getattr(item, "net_pnl_quote", ZERO) or ZERO)) for item in self.executors_info), ZERO)
         self._peak_pnl = max(self._peak_pnl, pnl)
+        volume_metrics = self._volume_metrics(now, pnl)
         for level in ("bid", "ask"):
             executor = active.get(level)
             details[f"active_{level}"] = getattr(getattr(executor, "config", None), "price", None)
@@ -1658,18 +2301,42 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "mutations_per_minute": self._mutations_last_minute(now),
                 "max_quote_mutations_per_minute": self.config.max_quote_mutations_per_minute,
                 "last_actions": self._last_action,
-                "fills": sum(
-                    1
-                    for item in self.executors_info
-                    if Decimal(str(getattr(item, "filled_amount_quote", ZERO) or ZERO)) > ZERO
-                ),
-                "volume": sum((Decimal(str(getattr(item, "filled_amount_quote", ZERO) or ZERO)) for item in self.executors_info), ZERO),
+                **self._quote_lifetime_metrics(),
+                "replacements_total": self._replacement_count,
+                "cancels_total": self._cancel_count,
+                "fills": volume_metrics["fills"],
+                "volume": volume_metrics["maker_volume_quote"],
+                "maker_volume_quote": volume_metrics["maker_volume_quote"],
+                "maker_volume_per_hour": volume_metrics["maker_volume_per_hour"],
+                "maker_volume_per_day": volume_metrics["maker_volume_per_day"],
+                "capital_turnover_per_day": volume_metrics["capital_turnover_per_day"],
+                "fills_per_hour": volume_metrics["fills_per_hour"],
+                "maker_fees_quote": volume_metrics["maker_fees_quote"],
+                "gross_spread_capture_quote": volume_metrics["gross_spread_capture_quote"],
+                "inventory_pnl_quote": volume_metrics["inventory_pnl_quote"],
+                "pnl_per_1000_volume": volume_metrics["pnl_per_1000_volume"],
+                "pnl_per_fill": volume_metrics["pnl_per_fill"],
+                "quote_uptime_pct": volume_metrics["quote_uptime_pct"],
+                "profitable_volume_efficiency": volume_metrics["profitable_volume_efficiency"],
+                "profitable_volume_efficiency_valid": volume_metrics["profitable_volume_efficiency_valid"],
                 "pnl": pnl,
                 "drawdown": self._peak_pnl - pnl,
                 "strategy_executor_pnl": pnl,
                 "strategy_executor_drawdown": self._peak_pnl - pnl,
+                "markout_5s_bps": self.processed_data.get("markout_5s_bps"),
                 "markout_30s_bps": self.processed_data.get("markout_30s_bps"),
                 "markout_60s_bps": self.processed_data.get("markout_60s_bps"),
+                "markout_300s_bps": self.processed_data.get("markout_300s_bps"),
+                "toxicity_guard_active": self._toxicity_guard_active,
+                "toxicity_guard_activations": self._toxicity_guard_activations,
+                "binance_shock_state": self._binance_shock_state,
+                "binance_emergency_conditions": self._binance_emergency_conditions,
+                "binance_emergency_active": self._binance_emergency_active,
+                "binance_emergency_recovery_since": self._binance_recovery_since,
+                "derive_normal_refresh_count": self._derive_refresh_count,
+                "binance_emergency_bid_cancels": self._binance_emergency_cancels["bid"],
+                "binance_emergency_ask_cancels": self._binance_emergency_cancels["ask"],
+                "replacement_reason_counts": dict(self._replacement_reason_counts),
                 "uptime_seconds": max(0.0, now - self._started_at),
                 "shadow_mode": self.config.shadow_mode,
                 "mainnet_armed": self.config.mainnet_armed,
@@ -1691,6 +2358,6 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         return [
             f"DERIVE BINANCE ADAPTIVE MM {self.config.asset}",
             f"state={row.get('market_state', 'WAITING')} mode={row.get('mm_mode', 'PAUSED')} operational={row.get('operational_state', 'ERROR')}",
-            f"fair={row.get('binance_fair_value', '—')} basis_bps={row.get('basis_bps', '—')} inventory={row.get('inventory_mode', '—')}",
+            f"derive_fair={row.get('derive_fair_value', row.get('binance_fair_value', '—'))} basis_residual_bps={row.get('basis_residual_bps', '—')} inventory={row.get('inventory_mode', '—')}",
             f"desired={row.get('desired_bid', '—')}/{row.get('desired_ask', '—')} active={row.get('active_bid', '—')}/{row.get('active_ask', '—')}",
         ]

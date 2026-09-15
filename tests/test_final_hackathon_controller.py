@@ -367,6 +367,112 @@ def test_stale_binance_pauses_sampling_without_synthesizing_gap_returns():
     assert instance._returns[-1] == 0.0
 
 
+@pytest.mark.parametrize("total_spread", ["3", "4", "5", "6", "8"])
+def test_normal_spread_uses_explicit_total_bid_ask_convention(total_spread):
+    total = Decimal(total_spread)
+    assert controller.normal_quote_edge_bps(total) * 2 == total
+    bid, ask = controller.calculate_normal_quote_prices(
+        Decimal("100"), Decimal("101"), Decimal("100.5"), total, Decimal("0.01")
+    )
+    assert controller.calculate_total_spread_bps(bid, ask) is not None
+    assert bid >= Decimal("100")
+    assert ask <= Decimal("101")
+
+
+def test_normal_quotes_improve_a_wide_bbo_but_never_take():
+    bid, ask = controller.calculate_normal_quote_prices(
+        Decimal("100"), Decimal("101"), Decimal("100.5"), Decimal("4"), Decimal("0.01")
+    )
+    assert bid > Decimal("100")
+    assert ask < Decimal("101")
+    assert bid < ask
+
+
+def test_protected_market_state_overrides_tight_normal_spread():
+    normal_edge = controller.effective_quote_edge_bps(
+        controller.MarketState.NORMAL, Decimal("4"), Decimal("4")
+    )
+    high_vol_edge = controller.effective_quote_edge_bps(
+        controller.MarketState.HIGH_VOL, Decimal("4"), Decimal("8")
+    )
+    toxic_edge = controller.effective_quote_edge_bps(
+        controller.MarketState.NORMAL, Decimal("4"), Decimal("4"), True, Decimal("4")
+    )
+    assert normal_edge == Decimal("2")
+    assert high_vol_edge == Decimal("8")
+    assert toxic_edge == Decimal("4")
+    assert controller.effective_quote_edge_bps(
+        controller.MarketState.NORMAL, Decimal("4"), Decimal("4"), True
+    ) == Decimal("2")
+
+
+def test_toxicity_guard_is_temporary_and_counts_activations():
+    instance, _ = native_controller(toxicity_guard_seconds=Decimal("60"))
+    instance._markout_5s.append(Decimal("-6"))
+    assert instance._refresh_toxicity_guard(100.0) is True
+    assert instance._toxicity_guard_activations == 1
+    assert instance._refresh_toxicity_guard(110.0) is True
+    assert instance._toxicity_guard_activations == 1
+    assert instance._refresh_toxicity_guard(161.0) is False
+
+
+def test_toxicity_guard_widens_normal_quotes_without_pausing():
+    instance, _ = native_controller(
+        normal_total_spread_bps=Decimal("4"),
+        toxicity_markout_threshold_bps=Decimal("5"),
+        toxicity_widening_total_spread_bps=Decimal("4"),
+    )
+    asyncio.run(instance.update_processed_data())
+    baseline = instance.processed_data["quote_total_spread_bps"]
+    instance._markout_5s.append(Decimal("-6"))
+    instance.market_data_provider.now += 1
+    instance.market_data_provider.books["derive_perpetual"].last_diff_uid += 1
+    instance.market_data_provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    assert baseline is not None
+    assert instance.processed_data["toxicity_guard_active"] is True
+    assert instance.processed_data["toxicity_guard_activations"] == 1
+    assert instance.processed_data["quote_total_spread_bps"] > baseline
+
+
+def test_tight_normal_spread_keeps_inventory_skew_and_capacity_limits():
+    provider = Provider()
+    mid = (provider.books["derive_perpetual"].bid.price + provider.books["derive_perpetual"].ask.price) / 2
+    _set_position(provider, "XRP-USDC", Decimal("120") / mid)
+    instance, _ = native_controller(
+        provider,
+        normal_total_spread_bps=Decimal("4"),
+        order_amount_quote=Decimal("125"),
+        max_asset_open_order_quote=Decimal("260"),
+        shadow_mode=False,
+        mainnet_armed=True,
+    )
+    asyncio.run(instance.update_processed_data())
+    assert instance.processed_data["normal_total_spread_bps"] == Decimal("4")
+    assert instance.processed_data["inventory_mode"] == "LONG_SKEW"
+    bid = next(action for action in instance.determine_executor_actions() if action.executor_config.level_id == "bid")
+    assert bid.executor_config.amount * bid.executor_config.price <= Decimal("60")
+
+
+def test_profitable_volume_efficiency_requires_positive_after_costs():
+    instance, provider = native_controller()
+    instance.executors_info = [
+        types.SimpleNamespace(
+            filled_amount_quote=Decimal("40"),
+            net_pnl_quote=Decimal("0.20"),
+            cum_fees_quote=Decimal("0.004"),
+        )
+    ]
+    provider.now += 3600
+    details = instance.get_custom_info()
+    assert details["maker_volume_per_hour"] == Decimal("40")
+    assert details["pnl_per_1000_volume"] == Decimal("5.00")
+    assert details["profitable_volume_efficiency_valid"] is True
+    assert details["profitable_volume_efficiency"] > Decimal("0")
+    assert details["gross_spread_capture_quote"] is None
+    assert details["inventory_pnl_quote"] is None
+
+
 def test_armed_create_actions_are_derive_only_and_one_per_side():
     instance, _ = native_controller(shadow_mode=False, mainnet_armed=True)
     asyncio.run(instance.update_processed_data())
@@ -459,6 +565,7 @@ def test_native_fill_markouts_are_unavailable_until_horizon_then_measured():
         )
     ]
     asyncio.run(instance.update_processed_data())
+    assert instance.get_custom_info()["markout_5s_bps"] is None
     assert instance.get_custom_info()["markout_30s_bps"] is None
     provider.now += 30
     provider.books["derive_perpetual"].last_diff_uid += 1
@@ -466,6 +573,7 @@ def test_native_fill_markouts_are_unavailable_until_horizon_then_measured():
     provider.books["derive_perpetual"].bid.price = Decimal("0.51")
     provider.books["derive_perpetual"].ask.price = Decimal("0.511")
     asyncio.run(instance.update_processed_data())
+    assert instance.get_custom_info()["markout_5s_bps"] > 0
     assert instance.get_custom_info()["markout_30s_bps"] > 0
     assert instance.get_custom_info()["markout_60s_bps"] is None
 
@@ -526,6 +634,270 @@ def test_basis_fair_value_is_causal_and_deterministic():
     assert controller.calculate_fair_value(Decimal("100"), Decimal("10"), Decimal("0.5")) == Decimal("100.10500")
 
 
+def test_derive_microprice_uses_derive_sizes_and_decimal_fallback():
+    micro = controller.calculate_derive_microprice(
+        Decimal("100"),
+        Decimal("101"),
+        Decimal("3"),
+        Decimal("1"),
+    )
+    assert micro == Decimal("100.75")
+    assert controller.calculate_derive_microprice(
+        Decimal("100"),
+        Decimal("101"),
+        Decimal("0"),
+        Decimal("1"),
+    ) == Decimal("100.5")
+
+
+def test_normal_quote_center_is_derive_anchored_not_binance_absolute():
+    provider = Provider()
+    provider.books["binance_perpetual_paper_trade"].bid.price = Decimal("10")
+    provider.books["binance_perpetual_paper_trade"].ask.price = Decimal("10.01")
+    instance, _ = native_controller(provider)
+    asyncio.run(instance.update_processed_data())
+    derive_mid = Decimal("0.5005")
+    assert instance.processed_data["quote_center_source"] == "DERIVE_MIDPOINT"
+    assert instance.processed_data["derive_fair_value"] == derive_mid
+    assert instance._plan.fair_value == derive_mid
+    assert instance._plan.fair_value < Decimal("1")
+
+
+def test_normal_quote_center_prefers_derive_microprice_when_sizes_are_valid():
+    provider = Provider()
+    provider.books["derive_perpetual"].bid.amount = Decimal("3")
+    provider.books["derive_perpetual"].ask.amount = Decimal("1")
+    instance, _ = native_controller(provider)
+    asyncio.run(instance.update_processed_data())
+    assert instance.processed_data["quote_center_source"] == "DERIVE_MICROPRICE"
+    assert instance.processed_data["derive_fair_value"] == Decimal("0.50075")
+    assert instance._plan.fair_value == Decimal("0.50075")
+
+
+def _activate_from_create_actions(instance, actions):
+    instance.executors_info = [
+        _executor(
+            f"{action.executor_config.level_id}-active",
+            action.executor_config.level_id,
+            str(action.executor_config.price),
+            instance.market_data_provider.now,
+        )
+        for action in actions
+        if type(action) is controller.CreateExecutorAction
+    ]
+
+
+def test_binance_movement_alone_does_not_refresh_normal_derive_quotes():
+    instance, provider = native_controller(shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+    creates = instance.determine_executor_actions()
+    _activate_from_create_actions(instance, creates)
+    provider.now += 1
+    provider.books["binance_perpetual_paper_trade"].bid.price += Decimal("0.00001")
+    provider.books["binance_perpetual_paper_trade"].ask.price += Decimal("0.00001")
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    assert instance.processed_data["market_state"] == "NORMAL"
+    assert instance.processed_data["derive_fair_value"] == Decimal("0.5005")
+    assert instance.determine_executor_actions() == []
+    assert instance.processed_data["last_actions"] == {"bid": "TICK_AWARE_HOLD", "ask": "TICK_AWARE_HOLD"}
+
+
+def test_derive_fair_movement_beyond_deadband_refreshes_after_residency():
+    instance, provider = native_controller(
+        shadow_mode=False,
+        mainnet_armed=True,
+        minimum_normal_quote_residency_seconds=Decimal("0"),
+    )
+    asyncio.run(instance.update_processed_data())
+    creates = instance.determine_executor_actions()
+    _activate_from_create_actions(instance, creates)
+    provider.now += 1
+    provider.books["derive_perpetual"].bid.price += Decimal("0.0004")
+    provider.books["derive_perpetual"].ask.price += Decimal("0.0004")
+    provider.books["derive_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    actions = instance.determine_executor_actions()
+    assert actions
+    assert all(isinstance(action, controller.StopExecutorAction) for action in actions)
+    assert instance.processed_data["last_actions"]["bid"] == "DERIVE_STALENESS_REFRESH"
+    assert instance.processed_data["last_actions"]["ask"] == "DERIVE_STALENESS_REFRESH"
+
+
+def test_derive_normal_refresh_honors_minimum_residency():
+    instance, provider = native_controller(
+        shadow_mode=False,
+        mainnet_armed=True,
+        minimum_normal_quote_residency_seconds=Decimal("10"),
+    )
+    asyncio.run(instance.update_processed_data())
+    creates = instance.determine_executor_actions()
+    _activate_from_create_actions(instance, creates)
+    provider.now += 5
+    provider.books["derive_perpetual"].bid.price += Decimal("0.0004")
+    provider.books["derive_perpetual"].ask.price += Decimal("0.0004")
+    provider.books["derive_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    assert instance.determine_executor_actions() == []
+    assert instance.processed_data["last_actions"] == {"bid": "MINIMUM_RESIDENCY", "ask": "MINIMUM_RESIDENCY"}
+
+
+def test_optional_max_quote_age_has_explicit_lifecycle_reason():
+    instance, provider = native_controller(
+        shadow_mode=False,
+        mainnet_armed=True,
+        minimum_normal_quote_residency_seconds=Decimal("0"),
+        max_normal_quote_age_seconds=Decimal("2"),
+    )
+    asyncio.run(instance.update_processed_data())
+    creates = instance.determine_executor_actions()
+    _activate_from_create_actions(instance, creates)
+    provider.now += 2
+    provider.books["derive_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    actions = instance.determine_executor_actions()
+    assert actions
+    assert instance.processed_data["last_actions"] == {
+        "bid": "MAX_QUOTE_AGE_REFRESH",
+        "ask": "MAX_QUOTE_AGE_REFRESH",
+    }
+
+
+def test_binance_bearish_toxicity_bypasses_residency_and_keeps_ask_safe():
+    instance, provider = native_controller(
+        shadow_mode=False,
+        mainnet_armed=True,
+        minimum_normal_quote_residency_seconds=Decimal("10"),
+    )
+    asyncio.run(instance.update_processed_data())
+    creates = instance.determine_executor_actions()
+    _activate_from_create_actions(instance, creates)
+    provider.now += 1
+    provider.books["binance_perpetual_paper_trade"].bid.price -= Decimal("0.003")
+    provider.books["binance_perpetual_paper_trade"].ask.price -= Decimal("0.003")
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    actions = instance.determine_executor_actions()
+    assert [action.executor_id for action in actions] == ["bid-active"]
+    assert instance.processed_data["last_actions"]["bid"] == (
+        "BINANCE_TRUE_SHOCK_LARGE_BINANCE_MOVE_CROSS_VENUE_DISLOCATION_CANCEL_BID"
+    )
+    assert instance.processed_data["desired_bid"] is None
+    assert instance.processed_data["desired_ask"] is not None
+    assert instance.processed_data["binance_emergency_bid_cancels"] == 1
+    assert instance.processed_data["binance_emergency_ask_cancels"] == 0
+
+
+def test_binance_bullish_toxicity_bypasses_residency_and_keeps_bid_safe():
+    instance, provider = native_controller(
+        shadow_mode=False,
+        mainnet_armed=True,
+        minimum_normal_quote_residency_seconds=Decimal("10"),
+    )
+    asyncio.run(instance.update_processed_data())
+    creates = instance.determine_executor_actions()
+    _activate_from_create_actions(instance, creates)
+    provider.now += 1
+    provider.books["binance_perpetual_paper_trade"].bid.price += Decimal("0.003")
+    provider.books["binance_perpetual_paper_trade"].ask.price += Decimal("0.003")
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    actions = instance.determine_executor_actions()
+    assert [action.executor_id for action in actions] == ["ask-active"]
+    assert instance.processed_data["last_actions"]["ask"] == (
+        "BINANCE_TRUE_SHOCK_LARGE_BINANCE_MOVE_CROSS_VENUE_DISLOCATION_CANCEL_ASK"
+    )
+    assert instance.processed_data["desired_ask"] is None
+    assert instance.processed_data["desired_bid"] is not None
+    assert instance.processed_data["binance_emergency_ask_cancels"] == 1
+    assert instance.processed_data["binance_emergency_bid_cancels"] == 0
+
+
+def test_binance_shock_requires_two_meaningful_conditions_for_emergency():
+    state, side, conditions = controller.classify_binance_shock(
+        Decimal("25"), Decimal("0"), Decimal("0")
+    )
+    assert (state, side, conditions) == ("ELEVATED", "ask", ("LARGE_BINANCE_MOVE",))
+    state, side, conditions = controller.classify_binance_shock(
+        Decimal("25"), Decimal("15"), Decimal("0")
+    )
+    assert state == "EMERGENCY"
+    assert side == "ask"
+    assert conditions == ("LARGE_BINANCE_MOVE", "CROSS_VENUE_DISLOCATION")
+
+
+def test_binance_elevated_state_widens_without_cancelling_quotes():
+    instance, provider = native_controller(shadow_mode=False, mainnet_armed=True)
+    asyncio.run(instance.update_processed_data())
+    creates = instance.determine_executor_actions()
+    _activate_from_create_actions(instance, creates)
+    baseline = instance.processed_data["quote_total_spread_bps"]
+    provider.now += 1
+    # Move both venues together: one elevated Binance move, no cross-venue
+    # dislocation, so the quotes remain active and simply widen.
+    for book_name in ("derive_perpetual", "binance_perpetual_paper_trade"):
+        book = provider.books[book_name]
+        book.bid.price += Decimal("0.0005")
+        book.ask.price += Decimal("0.0005")
+        book.last_diff_uid += 1
+    asyncio.run(instance.update_processed_data())
+    actions = instance.determine_executor_actions()
+    assert actions == []
+    assert instance.processed_data["binance_shock_state"] == "ELEVATED"
+    assert instance.processed_data["binance_emergency_active"] is False
+    assert instance.processed_data["desired_bid"] is not None
+    assert instance.processed_data["desired_ask"] is not None
+    assert instance.processed_data["quote_total_spread_bps"] > baseline
+
+
+def test_binance_emergency_hysteresis_requires_normal_recovery():
+    active, side, conditions, recovery_since, state = controller.update_binance_shock_hysteresis(
+        active=False,
+        latched_side=None,
+        latched_conditions=(),
+        recovery_since=None,
+        raw_state="EMERGENCY",
+        raw_side="ask",
+        raw_conditions=("LARGE_BINANCE_MOVE", "CROSS_VENUE_DISLOCATION"),
+        now=100.0,
+        recovery_seconds=10.0,
+    )
+    assert (active, side, conditions, recovery_since, state) == (
+        True,
+        "ask",
+        ("LARGE_BINANCE_MOVE", "CROSS_VENUE_DISLOCATION"),
+        None,
+        "EMERGENCY",
+    )
+    active, side, conditions, recovery_since, state = controller.update_binance_shock_hysteresis(
+        active=active,
+        latched_side=side,
+        latched_conditions=conditions,
+        recovery_since=recovery_since,
+        raw_state="NORMAL",
+        raw_side=None,
+        raw_conditions=(),
+        now=101.0,
+        recovery_seconds=10.0,
+    )
+    assert active is True and state == "EMERGENCY_RECOVERY" and recovery_since == 101.0
+    active, *_rest, state = controller.update_binance_shock_hysteresis(
+        active=active,
+        latched_side=side,
+        latched_conditions=conditions,
+        recovery_since=recovery_since,
+        raw_state="NORMAL",
+        raw_side=None,
+        raw_conditions=(),
+        now=111.0,
+        recovery_seconds=10.0,
+    )
+    assert active is False and state == "NORMAL"
+
+
 def test_refresh_deadband_residency_tick_hold_and_adverse_override():
     base = dict(
         side=TradeType.BUY,
@@ -539,6 +911,13 @@ def test_refresh_deadband_residency_tick_hold_and_adverse_override():
     assert controller.should_refresh(desired_price=Decimal("100.10"), age_seconds=Decimal("5"), **base)[1] == "MINIMUM_RESIDENCY"
     assert controller.should_refresh(desired_price=Decimal("100.02"), age_seconds=Decimal("20"), **base)[1] == "DEADBAND"
     assert controller.should_refresh(desired_price=Decimal("100.10"), age_seconds=Decimal("20"), **base)[0] is True
+    assert controller.should_refresh(
+        desired_price=Decimal("100.10"),
+        age_seconds=Decimal("20"),
+        derive_staleness_bps=Decimal("2"),
+        refresh_reason="DERIVE_STALENESS_REFRESH",
+        **base,
+    )[1] == "DEADBAND"
     assert controller.should_refresh(desired_price=Decimal("100.00"), age_seconds=Decimal("1"), **(base | {"fast_adverse": True}))[1] == "FAST_ADVERSE_MOVE"
 
 
@@ -568,11 +947,34 @@ def test_committed_config_is_xrp_only_shadow_surface():
     assert row["shadow_mode"] is True and row["mainnet_armed"] is False
     assert row["connector_name"] == "derive_perpetual"
     assert row["reference_connector_name"] == "binance_perpetual"
-    assert sorted(path.name for path in config_dir.glob("derive_binance_adaptive_mm_*.yml")) == [
-        "derive_binance_adaptive_mm_xrp.yml"
-    ]
+    assert "derive_binance_adaptive_mm_xrp.yml" in {
+        path.name for path in config_dir.glob("derive_binance_adaptive_mm_*.yml")
+    }
+    assert row["order_amount_quote"] == 40
+    assert row["normal_total_spread_bps"] == 8
     bot = yaml.safe_load((config_dir / "v2_with_controllers.yml").read_text())
     assert bot["controllers_config"] == ["derive_binance_adaptive_mm_xrp.yml"]
+
+
+def test_live_canary_config_is_separate_shadow_disarmed_surface():
+    config_dir = Path(__file__).parents[1] / "configs"
+    row = yaml.safe_load((config_dir / "derive_binance_adaptive_mm_xrp_live_canary.yml").read_text())
+    assert row["id"] == "derive_binance_adaptive_mm_xrp_live_canary"
+    assert row["asset"] == "XRP"
+    assert row["trading_pair"] == "XRP-USDC"
+    assert row["reference_trading_pair"] == "XRP-USDT"
+    assert row["connector_name"] == "derive_perpetual"
+    assert row["reference_connector_name"] == "binance_perpetual"
+    assert row["shadow_mode"] is True
+    assert row["mainnet_armed"] is False
+    assert row["order_amount_quote"] == 25
+    assert row["one_sided_inventory_ratio"] == 0.50
+    assert row["max_asset_inventory_quote"] == 50
+    assert row["max_asset_open_order_quote"] == 50
+    assert row["total_amount_quote"] == row["portfolio_capital_quote"] == 100
+    assert row["reserve_quote"] == 0
+    assert row["max_total_inventory_quote"] == row["max_total_open_order_quote"] == 50
+    assert row["normal_total_spread_bps"] == 8
 
 
 def test_native_minimum_size_blocks_quote_instead_of_submitting_invalid_order():
@@ -622,6 +1024,105 @@ def _set_position(provider, pair, amount):
     provider.positions = {
         pair: types.SimpleNamespace(trading_pair=pair, amount=Decimal(str(amount)), unrealized_pnl=Decimal("0"))
     }
+
+
+def canary_native_controller(provider=None, **overrides):
+    defaults = {
+        "total_amount_quote": Decimal("100"),
+        "portfolio_capital_quote": Decimal("100"),
+        "reserve_quote": Decimal("0"),
+        "asset_cap_quote": Decimal("50"),
+        "max_total_inventory_quote": Decimal("50"),
+        "max_total_open_order_quote": Decimal("50"),
+        "max_asset_inventory_quote": Decimal("50"),
+        "max_asset_open_order_quote": Decimal("50"),
+        "order_amount_quote": Decimal("25"),
+        "one_sided_inventory_ratio": Decimal("0.50"),
+        "shadow_mode": False,
+        "mainnet_armed": True,
+    }
+    defaults.update(overrides)
+    return native_controller(provider, **defaults)
+
+
+def test_canary_flat_allows_one_bid_and_one_ask():
+    instance, _ = canary_native_controller()
+    asyncio.run(instance.update_processed_data())
+
+    actions = instance.determine_executor_actions()
+    assert {action.executor_config.level_id for action in actions} == {"bid", "ask"}
+    assert all(action.executor_config.position_action == PositionAction.OPEN for action in actions)
+
+
+def test_canary_soft_long_threshold_blocks_increasing_bid_allows_reducing_ask():
+    provider = Provider()
+    derive_mid = (provider.books["derive_perpetual"].bid.price + provider.books["derive_perpetual"].ask.price) / 2
+    _set_position(provider, "XRP-USDC", Decimal("25.01") / derive_mid)
+    instance, _ = canary_native_controller(provider)
+    asyncio.run(instance.update_processed_data())
+
+    actions = instance.determine_executor_actions()
+    assert instance.processed_data["inventory_mode"] == "ASK_ONLY"
+    assert all(action.executor_config.level_id != "bid" for action in actions)
+    ask = next(action for action in actions if action.executor_config.level_id == "ask")
+    assert ask.executor_config.amount > Decimal("0")
+    assert ask.executor_config.position_action == PositionAction.CLOSE
+    projected = instance.processed_data["projected_position_amount_if_ask_fills"]
+    assert projected >= Decimal("0")
+
+
+def test_canary_soft_short_threshold_blocks_increasing_ask_allows_reducing_bid():
+    provider = Provider()
+    derive_mid = (provider.books["derive_perpetual"].bid.price + provider.books["derive_perpetual"].ask.price) / 2
+    _set_position(provider, "XRP-USDC", -Decimal("25.01") / derive_mid)
+    instance, _ = canary_native_controller(provider)
+    asyncio.run(instance.update_processed_data())
+
+    actions = instance.determine_executor_actions()
+    assert instance.processed_data["inventory_mode"] == "BID_ONLY"
+    assert all(action.executor_config.level_id != "ask" for action in actions)
+    bid = next(action for action in actions if action.executor_config.level_id == "bid")
+    assert bid.executor_config.amount > Decimal("0")
+    assert bid.executor_config.position_action == PositionAction.CLOSE
+    projected = instance.processed_data["projected_position_amount_if_bid_fills"]
+    assert projected <= Decimal("0")
+
+
+def test_canary_below_hard_cap_allows_reducing_quote():
+    provider = Provider()
+    derive_mid = (provider.books["derive_perpetual"].bid.price + provider.books["derive_perpetual"].ask.price) / 2
+    _set_position(provider, "XRP-USDC", Decimal("40") / derive_mid)
+    instance, _ = canary_native_controller(provider)
+    asyncio.run(instance.update_processed_data())
+
+    actions = instance.determine_executor_actions()
+    ask = next(action for action in actions if action.executor_config.level_id == "ask")
+    assert ask.executor_config.position_action == PositionAction.CLOSE
+    assert ask.executor_config.amount > Decimal("0")
+    assert abs(instance.processed_data["projected_position_notional_if_ask_fills"]) < Decimal("50")
+
+
+def test_canary_hard_inventory_cap_blocks_further_increase_without_flip():
+    provider = Provider()
+    derive_mid = (provider.books["derive_perpetual"].bid.price + provider.books["derive_perpetual"].ask.price) / 2
+    _set_position(provider, "XRP-USDC", Decimal("50.01") / derive_mid)
+    instance, _ = canary_native_controller(provider)
+    asyncio.run(instance.update_processed_data())
+
+    actions = instance.determine_executor_actions()
+    assert instance.processed_data["inventory_mode"] == "ASK_ONLY"
+    assert all(action.executor_config.level_id != "bid" for action in actions)
+    bid_amount, reason, projected, _ = instance._risk_adjusted_amount(
+        level="bid",
+        side=TradeType.BUY,
+        price=provider.books["derive_perpetual"].bid.price,
+        desired_amount=Decimal("50"),
+        now=provider.now,
+        reserve=False,
+    )
+    assert bid_amount == Decimal("0")
+    assert reason == "PROJECTED_ASSET_INVENTORY_LIMIT"
+    assert projected == provider.positions["XRP-USDC"].amount
 
 
 def test_inventory_increasing_bid_is_resized_to_asset_capacity():
