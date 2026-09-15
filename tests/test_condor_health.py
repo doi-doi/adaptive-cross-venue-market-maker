@@ -81,3 +81,24 @@ def test_account_metrics_are_reported_from_xrp_controller():
     assert overview["account_net_position_exposure"] == 20
     assert overview["available_collateral"] == 700
     assert overview["strategy_executor_pnl"] == 1
+
+
+def test_unknown_strategy_pnl_and_fees_are_not_coerced_to_zero():
+    data = payload()
+    data["controllers"]["xrp"]["custom_info"].update(
+        {
+            "pnl": None,
+            "strategy_executor_pnl": None,
+            "drawdown": None,
+            "strategy_executor_drawdown": None,
+            "maker_fees_quote": None,
+        }
+    )
+
+    overview = module.health_snapshot(data)["overview"]
+
+    assert overview["strategy_executor_pnl"] is None
+    assert overview["total_pnl"] is None
+    assert overview["strategy_executor_drawdown"] is None
+    assert overview["drawdown"] is None
+    assert overview["maker_fees_quote"] is None

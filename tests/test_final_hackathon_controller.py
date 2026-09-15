@@ -473,6 +473,39 @@ def test_profitable_volume_efficiency_requires_positive_after_costs():
     assert details["inventory_pnl_quote"] is None
 
 
+def test_missing_executor_pnl_and_fees_are_reported_as_unknown_not_zero():
+    instance, provider = native_controller()
+    instance.executors_info = [types.SimpleNamespace(filled_amount_quote=Decimal("40"))]
+    provider.now += 60
+
+    details = instance.get_custom_info()
+
+    assert details["pnl"] is None
+    assert details["strategy_executor_pnl"] is None
+    assert details["drawdown"] is None
+    assert details["maker_fees_quote"] is None
+    assert details["pnl_per_1000_volume"] is None
+    assert details["profitable_volume_efficiency_valid"] is False
+
+
+def test_native_placeholder_pnl_and_fees_after_a_fill_are_unknown():
+    instance, provider = native_controller()
+    instance.executors_info = [
+        types.SimpleNamespace(
+            filled_amount_quote=Decimal("40"),
+            net_pnl_quote=Decimal("0"),
+            cum_fees_quote=Decimal("0"),
+            custom_info={},
+        )
+    ]
+    provider.now += 60
+
+    details = instance.get_custom_info()
+
+    assert details["pnl"] is None
+    assert details["maker_fees_quote"] is None
+
+
 def test_armed_create_actions_are_derive_only_and_one_per_side():
     instance, _ = native_controller(shadow_mode=False, mainnet_armed=True)
     asyncio.run(instance.update_processed_data())
@@ -1304,11 +1337,11 @@ def test_projected_notional_diagnostic_uses_conservative_derive_mid():
     )
 
 
-def _manual_plan(instance, bid: str | None, ask: str | None):
+def _manual_plan(instance, bid: str | None, ask: str | None, amount: str = "18"):
     instance._plan = controller.QuotePlan(
         Decimal(bid) if bid is not None else None,
         Decimal(ask) if ask is not None else None,
-        Decimal("18"),
+        Decimal(amount),
         Decimal("0.5"),
         controller.MarketState.NORMAL,
         controller.MMMode.NEUTRAL,
@@ -1380,6 +1413,138 @@ def test_pending_cancel_blocks_replacement_until_terminal_confirmation():
     assert len(actions) == 2
     assert all(isinstance(action, CreateExecutorAction) for action in actions)
     assert instance.processed_data["pending_cancels"] == []
+
+
+def test_native_runnable_status_name_releases_pending_cancel():
+    class RunnableStatus(Enum):
+        SHUTTING_DOWN = 3
+        TERMINATED = 4
+
+    instance, _ = native_controller(shadow_mode=False, mainnet_armed=True)
+    shutting = _executor("ask-1", "ask", "0.5010", 100, active=False, status=RunnableStatus.SHUTTING_DOWN)
+    terminated = _executor("ask-2", "ask", "0.5010", 100, active=False, status=RunnableStatus.TERMINATED)
+
+    assert instance._is_terminal_executor(shutting) is False
+    assert instance._is_terminal_executor(terminated) is True
+
+
+def _attach_created_executors(instance, provider, actions):
+    """Materialize controller create actions as native-looking executors."""
+    executors = []
+    for action in actions:
+        cfg = action.executor_config
+        executor = _executor(
+            f"{cfg.level_id}-1",
+            cfg.level_id,
+            str(cfg.price),
+            provider.now,
+        )
+        executor.config.amount = cfg.amount
+        executors.append(executor)
+    instance.executors_info = executors
+    return executors
+
+
+def _freshen_books(provider):
+    provider.books["derive_perpetual"].last_diff_uid += 1
+    provider.books["binance_perpetual_paper_trade"].last_diff_uid += 1
+
+
+def test_post_fill_short_releases_cancel_and_filled_reservations_for_reducing_bid():
+    instance, provider = canary_native_controller(
+        minimum_normal_quote_residency_seconds=Decimal("0"),
+        normal_refresh_deadband_bps=Decimal("1"),
+    )
+    asyncio.run(instance.update_processed_data())
+    initial_actions = instance.determine_executor_actions()
+    executors = _attach_created_executors(instance, provider, initial_actions)
+    old_bid, old_ask = executors
+
+    # The ask fill leaves a short position at the one-sided threshold.  The
+    # filled executor is terminal/non-active; the existing bid must be
+    # cancelled before a reducing bid can be recreated.
+    _set_position(provider, "XRP-USDC", "-50")
+    old_ask.is_active = False
+    old_ask.status = "FILLED"
+    provider.now += 1
+    _freshen_books(provider)
+    asyncio.run(instance.update_processed_data())
+    assert instance.processed_data["inventory_mode"] == "BID_ONLY"
+    assert instance.processed_data["desired_ask"] is None
+    assert instance.processed_data["desired_bid"] is not None
+    assert (instance.config.id, "ask") not in instance._reservations[instance.config.portfolio_id]
+
+    _manual_plan(instance, "0.5010", None)
+    cycle_one = instance.determine_executor_actions()
+    assert [type(action) for action in cycle_one] == [StopExecutorAction]
+    assert cycle_one[0].executor_id == old_bid.id
+    assert not any(type(action) is CreateExecutorAction for action in cycle_one)
+
+    old_bid.is_active = False
+    old_bid.status = "SHUTTING_DOWN"
+    assert instance.determine_executor_actions() == []
+    assert instance.processed_data["pending_cancels"] == ["bid"]
+    assert not any(type(action) is CreateExecutorAction for action in instance.determine_executor_actions())
+
+    old_bid.status = "TERMINATED"
+    replacement = instance.determine_executor_actions()
+    bid_creates = [action for action in replacement if type(action) is CreateExecutorAction]
+    assert len(bid_creates) == 1
+    assert bid_creates[0].executor_config.side == TradeType.BUY
+    assert bid_creates[0].executor_config.position_action == PositionAction.CLOSE
+    assert bid_creates[0].executor_config.amount <= Decimal("50")
+    assert not any(
+        action.executor_config.side == TradeType.SELL
+        for action in bid_creates
+    )
+    assert instance.processed_data["bid_fill_effect"] in {"REDUCE", "FLATTEN"}
+
+
+def test_post_fill_long_releases_cancel_and_filled_reservations_for_reducing_ask():
+    instance, provider = canary_native_controller(
+        minimum_normal_quote_residency_seconds=Decimal("0"),
+        normal_refresh_deadband_bps=Decimal("1"),
+    )
+    asyncio.run(instance.update_processed_data())
+    initial_actions = instance.determine_executor_actions()
+    executors = _attach_created_executors(instance, provider, initial_actions)
+    old_bid, old_ask = executors
+
+    _set_position(provider, "XRP-USDC", "50")
+    old_bid.is_active = False
+    old_bid.status = "FILLED"
+    provider.now += 1
+    _freshen_books(provider)
+    asyncio.run(instance.update_processed_data())
+    assert instance.processed_data["inventory_mode"] == "ASK_ONLY"
+    assert instance.processed_data["desired_bid"] is None
+    assert instance.processed_data["desired_ask"] is not None
+    assert (instance.config.id, "bid") not in instance._reservations[instance.config.portfolio_id]
+
+    _manual_plan(instance, None, "0.4990")
+    cycle_one = instance.determine_executor_actions()
+    assert [type(action) for action in cycle_one] == [StopExecutorAction]
+    assert cycle_one[0].executor_id == old_ask.id
+    assert not any(type(action) is CreateExecutorAction for action in cycle_one)
+
+    old_ask.is_active = False
+    old_ask.status = "SHUTTING_DOWN"
+    assert instance.determine_executor_actions() == []
+    assert instance.processed_data["pending_cancels"] == ["ask"]
+    assert not any(type(action) is CreateExecutorAction for action in instance.determine_executor_actions())
+
+    old_ask.status = "TERMINATED"
+    replacement = instance.determine_executor_actions()
+    ask_creates = [action for action in replacement if type(action) is CreateExecutorAction]
+    assert len(ask_creates) == 1
+    assert ask_creates[0].executor_config.side == TradeType.SELL
+    assert ask_creates[0].executor_config.position_action == PositionAction.CLOSE
+    assert ask_creates[0].executor_config.amount <= Decimal("50")
+    assert not any(
+        action.executor_config.side == TradeType.BUY
+        for action in ask_creates
+    )
+    assert instance.processed_data["ask_fill_effect"] in {"REDUCE", "FLATTEN"}
 
 
 def _reload_manual_kill_switch(instance, enabled=True):

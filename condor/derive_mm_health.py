@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -31,6 +32,43 @@ class Config(BaseModel):
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _optional_float(value: Any) -> float | None:
+    """Parse an optional diagnostic value without converting unknown to zero."""
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _metric(row: Mapping[str, Any], *keys: str) -> Any:
+    """Return the first known value from synonymous diagnostic fields."""
+    for key in keys:
+        if key in row and row[key] is not None:
+            return row[key]
+    return None
+
+
+def _sum_optional(rows: list[Mapping[str, Any]], *keys: str) -> float | None:
+    """Aggregate a metric only when every participating row reports it."""
+    if not rows:
+        return None
+    values: list[float] = []
+    for row in rows:
+        value = _optional_float(_metric(row, *keys))
+        if value is None:
+            return None
+        values.append(value)
+    return sum(values)
+
+
+def _display_metric(value: Any, precision: int = 4) -> str:
+    parsed = _optional_float(value)
+    return "N/A" if parsed is None else f"{parsed:.{precision}f}"
 
 
 def _find_asset(data: Any, asset: str) -> dict[str, Any]:
@@ -89,7 +127,8 @@ def health_snapshot(
         mutation_limit = int(row.get("max_quote_mutations_per_minute", 30) or 30)
         if int(row.get("mutations_per_minute", 0) or 0) >= mutation_limit:
             alerts.append(f"EXCESSIVE_CHURN:{asset}")
-        if float(row.get("strategy_executor_drawdown", row.get("drawdown", 0)) or 0) >= max_controller_drawdown_quote:
+        drawdown = _optional_float(_metric(row, "strategy_executor_drawdown", "drawdown"))
+        if drawdown is not None and drawdown >= max_controller_drawdown_quote:
             alerts.append(f"STRATEGY_DRAWDOWN:{asset}")
         if bool(row.get("shadow_mode", False)) and abs(float(row.get("position_notional", 0) or 0)) > 0:
             alerts.append(f"UNEXPECTED_POSITION:{asset}")
@@ -140,14 +179,13 @@ def health_snapshot(
         "execution_mode": ", ".join(sorted(execution_modes)) or "UNKNOWN",
         "uptime_seconds": min((float(row.get("uptime_seconds", 0) or 0) for row in rows if row), default=0),
         "last_update": max((float(row.get("updated_at", 0) or 0) for row in rows if row), default=0),
-        "strategy_executor_pnl": sum((float(row.get("strategy_executor_pnl", row.get("pnl", 0)) or 0) for row in rows), 0.0),
-        "total_pnl": sum((float(row.get("strategy_executor_pnl", row.get("pnl", 0)) or 0) for row in rows), 0.0),
+        "strategy_executor_pnl": _sum_optional(rows, "strategy_executor_pnl", "pnl"),
+        "total_pnl": _sum_optional(rows, "strategy_executor_pnl", "pnl"),
         "total_volume": sum((float(row.get("volume", 0) or 0) for row in rows), 0.0),
         "total_exposure": sum((abs(float(row.get("position_notional", 0) or 0)) for row in rows), 0.0),
-        "strategy_executor_drawdown": sum(
-            (float(row.get("strategy_executor_drawdown", row.get("drawdown", 0)) or 0) for row in rows), 0.0
-        ),
-        "drawdown": sum((float(row.get("strategy_executor_drawdown", row.get("drawdown", 0)) or 0) for row in rows), 0.0),
+        "maker_fees_quote": _sum_optional(rows, "maker_fees_quote"),
+        "strategy_executor_drawdown": _sum_optional(rows, "strategy_executor_drawdown", "drawdown"),
+        "drawdown": _sum_optional(rows, "strategy_executor_drawdown", "drawdown"),
         # Account fields are copied from the single controller.
         "account_realized_pnl": account.get("account_realized_pnl"),
         "account_unrealized_pnl": account.get("account_unrealized_pnl"),
@@ -166,6 +204,7 @@ def health_snapshot(
 def _asset_row(asset: str, row: Mapping[str, Any]) -> dict[str, Any]:
     position_amount = float(row.get("position_amount", 0) or 0)
     position_side = "LONG" if position_amount > 0 else "SHORT" if position_amount < 0 else "FLAT"
+    strategy_pnl = _metric(row, "strategy_executor_pnl", "pnl")
     return {
         "Asset": asset,
         "Derive BBO": str(row.get("derive_bbo", "—")),
@@ -196,7 +235,7 @@ def _asset_row(asset: str, row: Mapping[str, Any]) -> dict[str, Any]:
             f"{row.get('cancels_per_minute', '—')}"
         ),
         "Fills / volume": f"{row.get('fills', '—')} / {row.get('volume', '—')}",
-        "Strategy PnL": str(row.get("strategy_executor_pnl", row.get("pnl", "—"))),
+        "Strategy PnL": str(strategy_pnl if strategy_pnl is not None else "N/A"),
         "30s / 60s markout": f"{row.get('markout_30s_bps', 'N/A')} / {row.get('markout_60s_bps', 'N/A')}",
     }
 
@@ -259,7 +298,8 @@ async def run(config: Config, context: Any) -> str:
             overview = snapshot["overview"]
             report.builder.kpi("Execution mode", overview["execution_mode"])
             report.builder.kpi("Uptime", f"{overview['uptime_seconds']:.0f}s")
-            report.builder.kpi("Strategy executor PnL", f"{overview['strategy_executor_pnl']:.4f}")
+            report.builder.kpi("Strategy executor PnL", _display_metric(overview["strategy_executor_pnl"]))
+            report.builder.kpi("Maker fees", _display_metric(overview["maker_fees_quote"]))
             report.builder.kpi("Account equity", str(overview["account_equity"] if overview["account_equity"] is not None else "N/A"))
             report.builder.kpi(
                 "Collateral balance",
@@ -292,7 +332,7 @@ async def run(config: Config, context: Any) -> str:
             )
             report.builder.kpi("Total volume", f"{overview['total_volume']:.4f}")
             report.builder.kpi("Total exposure", f"{overview['total_exposure']:.4f}")
-            report.builder.kpi("Strategy drawdown", f"{overview['strategy_executor_drawdown']:.4f}")
+            report.builder.kpi("Strategy drawdown", _display_metric(overview["strategy_executor_drawdown"]))
             report.builder.kpi("Errors", str(overview["errors"]))
             report.builder.kpi("Last update", str(overview["last_update"] or "—"))
             report.builder.table([_asset_row(asset, snapshot["assets"][asset]) for asset in ASSETS])

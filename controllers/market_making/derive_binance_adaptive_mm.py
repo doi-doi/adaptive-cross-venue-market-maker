@@ -12,6 +12,7 @@ import logging
 import statistics
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
@@ -890,7 +891,10 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         self._quote_uptime_seconds = 0.0
         self._quote_uptime_last_at = self._started_at
         self._quote_was_available = False
-        self._peak_pnl = ZERO
+        # ``None`` means native executor PnL has not been reported.  Keep the
+        # unknown state distinct from a verified zero so diagnostics cannot
+        # turn unavailable live accounting into a false zero.
+        self._peak_pnl: Decimal | None = None
         self._peak_account_equity: Decimal | None = None
         self._peak_account_collateral: Decimal | None = None
         self._price_tick: Decimal | None = None
@@ -972,6 +976,12 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         result = {}
         self._unexpected_active = []
         for executor in self.executors_info:
+            # Native executors can briefly retain ``is_active=True`` while
+            # publishing a terminal state (for example FILLED).  Such an
+            # executor no longer owns a live quote and must not block the
+            # opposite reducing quote or be counted as resting liquidity.
+            if self._is_terminal_executor(executor):
+                continue
             if not bool(getattr(executor, "is_active", False)):
                 continue
             level = str(getattr(getattr(executor, "config", None), "level_id", ""))
@@ -984,12 +994,20 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
     @staticmethod
     def _executor_status(executor: Any) -> str:
         status = getattr(executor, "status", None)
-        value = getattr(status, "value", status)
+        # RunnableStatus in Hummingbot 2.16.0 uses integer values; its enum
+        # name is the stable lifecycle label we need here.
+        value = getattr(status, "name", None) or getattr(status, "value", status)
         return str(value or "").upper()
 
     @classmethod
     def _is_terminal_executor(cls, executor: Any) -> bool:
         return bool(getattr(executor, "is_done", False)) or cls._executor_status(executor) in {
+            "FILLED",
+            "CANCELED",
+            "CANCELLED",
+            "FAILED",
+            "EXPIRED",
+            "COMPLETED",
             "TERMINATED",
             "CLOSED",
         }
@@ -1001,7 +1019,14 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
             executor = by_id.get(executor_id)
             if executor is not None and self._is_terminal_executor(executor):
                 self._pending_stops.discard(executor_id)
-                self._pending_stop_levels.pop(executor_id, None)
+                level = self._pending_stop_levels.pop(executor_id, None)
+                # A replacement reservation cannot have been created while
+                # this stop was pending.  Release the old level immediately
+                # once the native executor confirms terminal cancellation.
+                if level is not None:
+                    self._reservations.setdefault(self.config.portfolio_id, {}).pop(
+                        (self.config.id, level), None
+                    )
         return {self._pending_stop_levels[executor_id] for executor_id in self._pending_stops if executor_id in self._pending_stop_levels}
 
     def _pending_create_levels(self) -> set[str]:
@@ -1195,13 +1220,36 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
 
     def _prune_reservations(self, now: float, active: dict[str, Any]) -> None:
         reservations = self._reservations.setdefault(self.config.portfolio_id, {})
+        # A filled/terminal executor can leave its create reservation behind
+        # because the executor is removed from the active map before the next
+        # controller cycle.  Keep reservations for genuinely pending creates,
+        # but release one whose terminal executor predates that reservation.
+        terminal_executor_times: dict[str, float] = {}
+        for executor in self.executors_info:
+            if not self._is_terminal_executor(executor):
+                continue
+            level = str(getattr(getattr(executor, "config", None), "level_id", ""))
+            if level not in {"bid", "ask"}:
+                continue
+            try:
+                terminal_at = float(executor.timestamp)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            terminal_executor_times[level] = min(terminal_executor_times.get(level, terminal_at), terminal_at)
         for key, reservation in list(reservations.items()):
             # Only the owning controller can reconcile its reservation. A
             # stalled controller retains its pending exposure until it resumes
             # or the bounded safety TTL expires.
             if reservation.controller_id != self.config.id:
                 continue
-            if reservation.level in active or now - reservation.created_at >= self._reservation_ttl_seconds:
+            if reservation.level in active:
+                reservations.pop(key, None)
+                continue
+            terminal_at = terminal_executor_times.get(reservation.level)
+            if terminal_at is not None and terminal_at <= reservation.created_at + 1e-6:
+                reservations.pop(key, None)
+                continue
+            if now - reservation.created_at >= self._reservation_ttl_seconds:
                 reservations.pop(key, None)
 
     def _portfolio_totals(self) -> tuple[Decimal, Decimal]:
@@ -1420,16 +1468,56 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         self._quote_uptime_last_at = now
         self._quote_was_available = quote_available
 
-    def _volume_metrics(self, now: float, pnl: Decimal) -> dict[str, Any]:
+    @staticmethod
+    def _optional_decimal(value: Any) -> Decimal | None:
+        """Parse an optional native accounting value without inventing zero."""
+        if value is None:
+            return None
+        try:
+            parsed = Decimal(str(value))
+        except (ArithmeticError, TypeError, ValueError):
+            return None
+        return parsed if parsed.is_finite() else None
+
+    def _executor_metric_value(self, executor: Any, name: str) -> Decimal | None:
+        """Read one executor metric, rejecting native placeholder zeros.
+
+        Hummingbot 2.16's ``ExecutorInfo`` always exposes numeric PnL/fee
+        properties, while the stock ``OrderExecutor`` does not provide an
+        authoritative PnL calculation.  Its custom diagnostics therefore act
+        as the provenance gate: a filled executor without an explicit metric
+        is unknown, not zero.  Test doubles and future executors that expose a
+        scalar directly remain supported.
+        """
+        custom = getattr(executor, "custom_info", None)
+        if isinstance(custom, Mapping):
+            if name in custom:
+                return self._optional_decimal(custom.get(name))
+            filled = self._optional_decimal(getattr(executor, "filled_amount_quote", None))
+            if filled is not None and filled > ZERO:
+                return None
+            return ZERO
+        return self._optional_decimal(getattr(executor, name, None))
+
+    def _executor_metric_sum(self, name: str) -> Decimal | None:
+        """Sum a native executor metric, preserving unknown values."""
+        if not self.executors_info:
+            return ZERO
+        values: list[Decimal] = []
+        for executor in self.executors_info:
+            value = self._executor_metric_value(executor, name)
+            if value is None:
+                return None
+            values.append(value)
+        return sum(values, ZERO)
+
+    def _volume_metrics(self, now: float, pnl: Decimal | None) -> dict[str, Any]:
         """Return raw maker-turnover diagnostics without fabricating fills."""
         volume = sum(
             (Decimal(str(getattr(item, "filled_amount_quote", ZERO) or ZERO)) for item in self.executors_info),
             ZERO,
         )
-        fees = sum(
-            (Decimal(str(getattr(item, "cum_fees_quote", ZERO) or ZERO)) for item in self.executors_info),
-            ZERO,
-        )
+        fees = self._executor_metric_sum("cum_fees_quote")
         fills = sum(
             1
             for item in self.executors_info
@@ -1441,13 +1529,19 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         days = uptime / Decimal("86400") if uptime > ZERO else ZERO
         volume_per_hour = volume / hours if hours > ZERO else ZERO
         volume_per_day = volume / days if days > ZERO else ZERO
-        pnl_per_1000 = pnl / volume * Decimal("1000") if volume > ZERO else None
-        pnl_per_fill = pnl / Decimal(fills) if fills else None
+        pnl_per_1000 = pnl / volume * Decimal("1000") if pnl is not None and volume > ZERO else None
+        pnl_per_fill = pnl / Decimal(fills) if pnl is not None and fills else None
         markout_5 = self._average_markout(self._markout_5s)
         markout_30 = self._average_markout(self._markout_30s)
         markout_toxic = markout_is_toxic(markout_5, markout_30, self.config.toxicity_markout_threshold_bps)
-        valid = pnl > ZERO and pnl_per_1000 is not None and pnl_per_1000 > ZERO and not markout_toxic
-        if self.config.max_account_drawdown_quote is not None:
+        valid = (
+            pnl is not None
+            and pnl > ZERO
+            and pnl_per_1000 is not None
+            and pnl_per_1000 > ZERO
+            and not markout_toxic
+        )
+        if self.config.max_account_drawdown_quote is not None and pnl is not None and self._peak_pnl is not None:
             valid = valid and (self._peak_pnl - pnl) <= self.config.max_account_drawdown_quote
         score = volume_per_day if valid else ZERO
         capital_turnover = (
@@ -1718,8 +1812,21 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                         )
             account_risk = self._account_risk(derive_mid)
             account_drawdown = account_risk["account_drawdown"]
+            # A one-sided quote that reduces the current inventory is already
+            # an unwind path.  It may briefly sit at the asset cap while the
+            # controller refreshes it, so do not pause the plan merely because
+            # that replaceable reducing quote is counted as open exposure.
+            reducing_active_notional = ZERO
+            if position < ZERO:
+                reducing_active_notional = own_snapshot.open_bid_amount * own_snapshot.open_bid_price
+            elif position > ZERO:
+                reducing_active_notional = own_snapshot.open_ask_amount * own_snapshot.open_ask_price
+            asset_exposure_for_limit = abs(position_notional) + max(
+                ZERO,
+                own_snapshot.open_order_notional - reducing_active_notional,
+            )
             if (
-                own_snapshot.open_order_notional + abs(position_notional) > self.config.asset_cap_quote
+                asset_exposure_for_limit > self.config.asset_cap_quote
                 or total_inventory > self.config.max_total_inventory_quote
                 or total_orders > self.config.max_total_open_order_quote
             ):
@@ -2286,8 +2393,9 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
         active = self._active()
         pending_cancel_levels = self._reconcile_pending_stops()
         details = dict(self.processed_data)
-        pnl = sum((Decimal(str(getattr(item, "net_pnl_quote", ZERO) or ZERO)) for item in self.executors_info), ZERO)
-        self._peak_pnl = max(self._peak_pnl, pnl)
+        pnl = self._executor_metric_sum("net_pnl_quote")
+        if pnl is not None:
+            self._peak_pnl = pnl if self._peak_pnl is None else max(self._peak_pnl, pnl)
         volume_metrics = self._volume_metrics(now, pnl)
         for level in ("bid", "ask"):
             executor = active.get(level)
@@ -2320,9 +2428,11 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 "profitable_volume_efficiency": volume_metrics["profitable_volume_efficiency"],
                 "profitable_volume_efficiency_valid": volume_metrics["profitable_volume_efficiency_valid"],
                 "pnl": pnl,
-                "drawdown": self._peak_pnl - pnl,
+                "drawdown": self._peak_pnl - pnl if pnl is not None and self._peak_pnl is not None else None,
                 "strategy_executor_pnl": pnl,
-                "strategy_executor_drawdown": self._peak_pnl - pnl,
+                "strategy_executor_drawdown": (
+                    self._peak_pnl - pnl if pnl is not None and self._peak_pnl is not None else None
+                ),
                 "markout_5s_bps": self.processed_data.get("markout_5s_bps"),
                 "markout_30s_bps": self.processed_data.get("markout_30s_bps"),
                 "markout_60s_bps": self.processed_data.get("markout_60s_bps"),
