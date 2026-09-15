@@ -1246,7 +1246,7 @@ class DeriveBinanceAdaptiveMM(ControllerBase):
                 reservations.pop(key, None)
                 continue
             terminal_at = terminal_executor_times.get(reservation.level)
-            if terminal_at is not None and terminal_at <= reservation.created_at + 1e-6:
+            if terminal_at is not None and abs(terminal_at - reservation.created_at) <= 1e-6:
                 reservations.pop(key, None)
                 continue
             if now - reservation.created_at >= self._reservation_ttl_seconds:

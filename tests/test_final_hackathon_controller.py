@@ -1428,6 +1428,29 @@ def test_native_runnable_status_name_releases_pending_cancel():
     assert instance._is_terminal_executor(terminated) is True
 
 
+def test_older_terminal_executor_does_not_release_fresh_reservation():
+    instance, provider = native_controller(shadow_mode=False, mainnet_armed=True)
+    key = (instance.config.id, "bid")
+    instance._reservations[instance.config.portfolio_id] = {
+        key: controller.PendingReservation(
+            controller_id=instance.config.id,
+            asset=instance.config.asset,
+            level="bid",
+            side=TradeType.BUY,
+            amount=Decimal("10"),
+            price=Decimal("0.5"),
+            created_at=provider.now,
+        )
+    }
+    instance.executors_info = [
+        _executor("bid-old", "bid", "0.5", provider.now - 1, active=False, status="FILLED")
+    ]
+
+    instance._prune_reservations(provider.now, {})
+
+    assert key in instance._reservations[instance.config.portfolio_id]
+
+
 def _attach_created_executors(instance, provider, actions):
     """Materialize controller create actions as native-looking executors."""
     executors = []
